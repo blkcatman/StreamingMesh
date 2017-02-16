@@ -282,6 +282,34 @@ CanvasRenderer:
   m_PrefabParentObject: {fileID: 0}
   m_PrefabInternal: {fileID: 0}
   m_GameObject: {fileID: 29163231}
+--- !u!1 &145842835
+GameObject:
+  m_ObjectHideFlags: 0
+  m_PrefabParentObject: {fileID: 0}
+  m_PrefabInternal: {fileID: 0}
+  serializedVersion: 5
+  m_Component:
+  - component: {fileID: 145842836}
+  m_Layer: 0
+  m_Name: '[1. Open Inspector Sender]'
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &145842836
+Transform:
+  m_ObjectHideFlags: 0
+  m_PrefabParentObject: {fileID: 0}
+  m_PrefabInternal: {fileID: 0}
+  m_GameObject: {fileID: 145842835}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_RootOrder: 4
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &285288488
 GameObject:
   m_ObjectHideFlags: 0
@@ -342,7 +370,7 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_Children: []
   m_Father: {fileID: 0}
-  m_RootOrder: 7
+  m_RootOrder: 9
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &509698046
 GameObject:
@@ -431,7 +459,7 @@ RectTransform:
   m_Children:
   - {fileID: 2042771140}
   m_Father: {fileID: 0}
-  m_RootOrder: 6
+  m_RootOrder: 8
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
   m_AnchorMax: {x: 0, y: 0}
@@ -483,7 +511,7 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_Children: []
   m_Father: {fileID: 0}
-  m_RootOrder: 4
+  m_RootOrder: 6
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &693137061
 MonoBehaviour:
@@ -497,8 +525,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   address: http://127.0.0.1:8080/channels/
-  channel: channel_eb30ylzu
-  authCode: jbRVqBg4
+  channel: channel_UTCSD
+  authCode: g29fz6d4
 --- !u!1 &694457079
 GameObject:
   m_ObjectHideFlags: 0
@@ -545,7 +573,7 @@ Transform:
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_Children: []
   m_Father: {fileID: 0}
-  m_RootOrder: 5
+  m_RootOrder: 7
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!114 &694457082
 MonoBehaviour:
@@ -559,7 +587,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   address: http://127.0.0.1:8080/channels/
-  channel: channel_eb30ylzu
+  channel: channel_UTCSD
   authCode: 
 --- !u!1 &913347666 stripped
 GameObject:
@@ -689,6 +717,34 @@ Prefab:
     m_RemovedComponents: []
   m_ParentPrefab: {fileID: 100100000, guid: e39dd657be7298d408f1a135c76c3d9a, type: 2}
   m_IsPrefabParent: 0
+--- !u!1 &1854659684
+GameObject:
+  m_ObjectHideFlags: 0
+  m_PrefabParentObject: {fileID: 0}
+  m_PrefabInternal: {fileID: 0}
+  serializedVersion: 5
+  m_Component:
+  - component: {fileID: 1854659685}
+  m_Layer: 0
+  m_Name: '[2. Press Channel Create]'
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &1854659685
+Transform:
+  m_ObjectHideFlags: 0
+  m_PrefabParentObject: {fileID: 0}
+  m_PrefabInternal: {fileID: 0}
+  m_GameObject: {fileID: 1854659684}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_RootOrder: 5
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1905880328
 GameObject:
   m_ObjectHideFlags: 0
@@ -783,9 +839,9 @@ MonoBehaviour:
   url: http://127.0.0.1:8080/
   lastMinOnly: 0
   channels:
-  - channel_eb30ylzu
+  - channel_UTCSD
   auths:
-  - jbRVqBg4
+  - g29fz6d4
 --- !u!4 &1940438376
 Transform:
   m_ObjectHideFlags: 0

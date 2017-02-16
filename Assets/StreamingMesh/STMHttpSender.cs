@@ -1,4 +1,12 @@
-﻿using UnityEngine;
+﻿// STMHttpSender.cs
+//
+//Copyright (c) 2017 Tatsuro Matsubara.
+//Creative Commons License
+//This file is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License.
+//https://creativecommons.org/licenses/by-sa/4.0/
+//
+
+using UnityEngine;
 using System.Collections;
 using System.Collections.Generic;
 using System;

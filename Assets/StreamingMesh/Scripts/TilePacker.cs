@@ -1,8 +1,9 @@
 ﻿//TilePacker.cs
 //
-//Copyright (c) 2016 Tatsuro Matsubara
-//Released under the MIT license
-//http://opensource.org/licenses/mit-license.php
+//Copyright (c) 2017 Tatsuro Matsubara.
+//Creative Commons License
+//This file is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License.
+//https://creativecommons.org/licenses/by-sa/4.0/
 //
 
 using UnityEngine;
