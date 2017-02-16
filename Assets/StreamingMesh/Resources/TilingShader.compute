@@ -1,0 +1,92 @@
+﻿//TilingShader.compute
+//
+//Copyright (c) 2016 Tatsuro Matsubara
+//Released under the MIT license
+//http://opensource.org/licenses/mit-license.php
+//
+
+#pragma kernel cs_main8
+#pragma kernel cs_main32
+#pragma kernel cs_main128
+#pragma kernel cs_main512
+
+struct TiledVertex {
+	uint tileID;
+	uint polyIndex;
+	uint x;
+	uint y;
+	uint z;
+};
+
+uint packSize;
+uint modelGroup;
+int range;
+
+float4x4 wrdMatrix;
+//float4x4 viewInverse;
+
+StructuredBuffer<float3> srcBuf;
+RWStructuredBuffer<TiledVertex> destBuf;
+
+void doEvents(int3 id) {
+	destBuf[id.x].polyIndex = id.x + modelGroup * 65536;
+
+	uint tx, ty, tz, x, y, z;
+	//float3 pos = mul( mul( float4(srcBuf[id.x], 1.0), wrdMatrix), viewInverse).xyz;
+	float3 pos = mul( float4(srcBuf[id.x], 1.0), wrdMatrix).xyz;
+
+	uint hk = packSize / 2;
+	uint qk = hk / range;
+
+	if(
+		pos.x <= -range || pos.x >= range ||
+		pos.y <= -range || pos.y >= range ||
+		pos.z <= -range || pos.z >= range
+	) {
+		tx = 255;
+		ty = 255;
+		tz = 255;
+
+		x = 0;
+		y = 0;
+		z = 0;
+
+	} else {
+		tx = (pos.x * qk) + hk;
+		ty = (pos.y * qk) + hk;
+		tz = (pos.z * qk) + hk;
+
+		x = frac((pos.x + range) * qk) * 32;
+		y = frac((pos.y + range) * qk) * 32;
+		z = frac((pos.z + range) * qk) * 32;
+	}
+
+	destBuf[id.x].tileID = 65536 * tz + 256 * ty + tx;
+	destBuf[id.x].x = x;
+	destBuf[id.x].y = y;
+	destBuf[id.x].z = z;
+}
+
+[numthreads(8,1,1)]
+void cs_main8 (int3 id : SV_DispatchThreadID)
+{
+	doEvents(id);
+}
+
+[numthreads(32,1,1)]
+void cs_main32 (int3 id : SV_DispatchThreadID)
+{
+	doEvents(id);
+}
+
+[numthreads(128,1,1)]
+void cs_main128 (int3 id : SV_DispatchThreadID)
+{
+	doEvents(id);
+}
+
+[numthreads(512,1,1)]
+void cs_main512 (int3 id : SV_DispatchThreadID)
+{
+	doEvents(id);
+}
