@@ -17,6 +17,7 @@ using System.Linq;
 using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Threading;
+using System.Net;
 
 namespace StreamingMesh {
 
@@ -36,6 +37,9 @@ namespace StreamingMesh {
         public readonly Queue<Action> executeOnUpdate = new Queue<Action>();
 		public readonly Queue<KeyValuePair<string, byte[]>> requestBuffer = new Queue<KeyValuePair<string, byte[]>>();
 		bool waitResponse = false;
+#if UNITY_EDITOR
+		Thread thread;
+#endif
 
 		protected void Request(string filename, bool isBinary) {
 			StartCoroutine(_Request(filename, isBinary, new Action<byte[]>((outBytes) =>
@@ -83,18 +87,73 @@ namespace StreamingMesh {
 		}
 
 		protected void Send(string query, byte[] data, bool isAuth) {
+#if UNITY_EDITOR
+			executeOnUpdate.Enqueue(() => {
+				_Send(query, data, true, isAuth);
+			});
+#endif
+			/*
 			executeOnUpdate.Enqueue(() => {
 				StartCoroutine(_Send(query, data, true, isAuth));
 			});
+			*/
 		}
 
 		protected void Send(string query, string message, bool isAuth) {
+#if UNITY_EDITOR
+			executeOnUpdate.Enqueue(() => {
+				byte[] data = Encoding.UTF8.GetBytes(message);
+				_Send(query, data, false, isAuth);
+			});
+#endif
+			/*
 			executeOnUpdate.Enqueue(() => {
 				byte[] data = Encoding.UTF8.GetBytes(message);
 				StartCoroutine(_Send(query, data, false, isAuth));
 			});
+			*/
 		}
 
+		void _Send(string query, byte[] data, bool isBinary, bool isAuth) {
+			if(isAuth && authCode == "") {
+				Debug.LogError("Authentication failed in initial sending!");
+				return;
+			}
+			string addr = address + channel + "/?" +
+				(isAuth ? "auth=" + this.authCode + "&" : "") + query;
+			Debug.Log("SEND: " + addr);
+			try {
+				WebRequest req = WebRequest.Create(addr);
+				req.ContentType = "application/" + (isBinary ? "octet-stream" : "json");
+				req.Method = "POST";
+				req.ContentLength = data.Length;
+				waitResponse = true;
+				req.Timeout = 10000;
+
+				Stream reqStream = req.GetRequestStream();
+				reqStream.Write(data, 0, data.Length);
+				reqStream.Close();
+
+				WebResponse res = req.GetResponse();
+				Stream resStream = res.GetResponseStream();
+				StreamReader sr = new StreamReader(resStream);
+				string val = sr.ReadToEnd();
+				if(!isAuth) {
+					AuthInfo ai = JsonUtility.FromJson<AuthInfo>(val);
+					this.authCode = ai.auth;
+				}
+				//Debug.Log(val);
+				sr.Close();
+				resStream.Close();
+			} catch(WebException we) {
+				Debug.LogError(we.Message);
+			}
+
+			waitResponse = false;
+		}
+
+
+		/*
 		IEnumerator _Send(string query, byte[] data, bool isBinary, bool isAuth) {
 			if(isAuth && authCode == "") {
 				Debug.LogError("Authentication failed in initial sending!");
@@ -123,7 +182,7 @@ namespace StreamingMesh {
 
 			waitResponse = false;
 		}
-
+		*/
 		protected virtual void ProcessRequestedData(KeyValuePair<string, byte[]> pair) {
 		}
 
@@ -135,15 +194,42 @@ namespace StreamingMesh {
                   .Select(s => s[random.Next(s.Length)]).ToArray());
             }
         }
+#if UNITY_EDITOR
+		void OnEnable() {
+			thread = new Thread(ThreadUpdate);
+			try {
+				thread.Start();
+			} catch(ThreadStartException ex) {
+				Debug.LogError(ex.Source);
+			}
+		}
 
+		void OnDisable() {
+			if(thread != null) {
+				thread.Abort();
+			}
+		}
+
+		void ThreadUpdate() {
+			while(true) {
+				Thread.Sleep(0);
+				lock (executeOnUpdate) {
+					if(executeOnUpdate.Count > 0 && waitResponse == false) {
+						executeOnUpdate.Dequeue().Invoke();
+					}
+				}
+			}
+		}
+#endif
 		float process_speed = 0f;
 
 		void Update() {
 			process_speed += Time.deltaTime;
-
+#if !UNITY_EDITOR
 			if(executeOnUpdate.Count > 0 && waitResponse == false) {
 				executeOnUpdate.Dequeue().Invoke();
 			}
+#endif
 			if (requestBuffer.Count > 0) {
 				//Debug.Log("CALL time: " + process_speed);
 				//process_speed = 0f;
