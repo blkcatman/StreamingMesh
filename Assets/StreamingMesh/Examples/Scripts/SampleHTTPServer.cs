@@ -136,7 +136,7 @@ public class SampleHTTPServer : MonoBehaviour {
         }
 
         if (req.HttpMethod == "POST") {
-            excuteOnUpdate.Enqueue(() => {
+			excuteOnUpdate.Enqueue(() => {
                 OnPost(req, res);
             });
         }
@@ -157,13 +157,21 @@ public class SampleHTTPServer : MonoBehaviour {
 
     void OnGet(HttpListenerRequest req, HttpListenerResponse res) {
         string[] path = ParseURLToPath(req.RawUrl);
-        if ("channels" != path[0]) {
+		if ("channels" != path[0]) {
             OnError(req, res, "400");
             return;
         }
-			
+		string filePath = "";
+#if UNITY_EDITOR_WIN
+		filePath = req.RawUrl.Substring(1).Replace("/", "\\");
+#else
+		filePath = req.RawUrl.Substring(1);
+		/*
 		Uri uri = new Uri(req.RawUrl);
-		string filePath = uri.LocalPath.Substring(1) + Uri.UnescapeDataString(uri.Fragment);
+		Debug.Log(uri.AbsolutePath);
+		filePath = uri.LocalPath.Substring(1) + Uri.UnescapeDataString(uri.Fragment);
+		*/
+#endif
 		if(File.Exists(filePath)) {
 			string ext = Path.GetExtension(filePath);
 			if (ext == ".png" || ext == ".stmv") {
@@ -360,6 +368,7 @@ public class SampleHTTPServer : MonoBehaviour {
 		channelInfo.materials = materialUrls;
 		channelInfo.textures = textureUrls;
 		channelInfo.stream_info = url + "channels/" + channel + "/streaminfo.stmj";
+		Debug.Log(JsonUtility.ToJson(channelInfo));
 		FileWrite<string>("channels", channel, "stream.json", JsonUtility.ToJson(channelInfo));
 
         System.Random random = new System.Random();

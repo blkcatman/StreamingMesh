@@ -124,7 +124,7 @@ namespace StreamingMesh {
 			Debug.Log("SEND: " + addr);
 			try {
 				WebRequest req = WebRequest.Create(addr);
-				req.ContentType = "application/" + (isBinary ? "octet-stream" : "json");
+				req.ContentType = isBinary ? "application/octet-stream" : "text/plain";
 				req.Method = "POST";
 				req.ContentLength = data.Length;
 				waitResponse = true;
