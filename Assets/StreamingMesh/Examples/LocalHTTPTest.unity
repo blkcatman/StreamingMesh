@@ -605,7 +605,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   address: http://127.0.0.1:8080/channels/
   channel: channel_UTCSD
-  authCode: 0DqV90bf
+  authCode: Eg1yT9iB
 --- !u!1 &694457079
 GameObject:
   m_ObjectHideFlags: 0
@@ -892,7 +892,7 @@ MonoBehaviour:
   channels:
   - channel_UTCSD
   auths:
-  - 0DqV90bf
+  - Eg1yT9iB
 --- !u!4 &1940438376
 Transform:
   m_ObjectHideFlags: 0

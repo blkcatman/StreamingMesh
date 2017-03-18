@@ -238,21 +238,37 @@ namespace StreamingMesh {
 		}
 
 		public static byte[] Compress(byte[] data) {
-			using (MemoryStream rStream = new MemoryStream()) {
-				using (GZipStream gStream = new GZipStream(rStream, CompressionMode.Compress, true)) {
-					new BinaryFormatter().Serialize(gStream, data);
-				}
-				return rStream.ToArray();
-			} 
+            using (MemoryStream rStream = new MemoryStream(data))
+            using (MemoryStream wStream = new MemoryStream()) {
+                using (GZipStream gStream = new GZipStream(wStream, CompressionMode.Compress)) {
+                    //new BinaryFormatter().Serialize(gStream, data);
+                    CopyTo(rStream, gStream);
+                }
+                return wStream.ToArray();
+            } 
 		}
 
 		public static byte[] Decompress(byte[] data) {
-			using (MemoryStream rStream = new MemoryStream(data)) {
-				using (GZipStream gStream = new GZipStream(rStream, CompressionMode.Decompress, true)) {
-					return (byte[])new BinaryFormatter().Deserialize(gStream);
-				}
-			}
+            using (MemoryStream rStream = new MemoryStream(data))
+            using (MemoryStream wStream = new MemoryStream()) { 
+                using (GZipStream gStream = new GZipStream(rStream, CompressionMode.Decompress)) {
+                    //return (byte[])new BinaryFormatter().Deserialize(gStream);
+                    CopyTo(gStream, wStream);
+                }
+                return wStream.ToArray();
+            }
 		}
+
+        public static void CopyTo(Stream input, Stream output)
+        {
+            byte[] buffer = new byte[16 * 1024]; // Fairly arbitrary size
+            int bytesRead;
+
+            while ((bytesRead = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                output.Write(buffer, 0, bytesRead);
+            }
+        }
     }
 
 }
