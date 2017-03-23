@@ -74,6 +74,7 @@ LightmapSettings:
     m_MixedBakeMode: 1
     m_BakeBackend: 0
     m_PVRSampling: 1
+    m_PVRDirectSampleCount: 32
     m_PVRSampleCount: 500
     m_PVRBounces: 2
     m_PVRFiltering: 0
@@ -561,7 +562,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &693137059
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -605,7 +606,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   address: http://127.0.0.1:8080/channels/
   channel: channel_UTCSD
-  authCode: Eg1yT9iB
+  authCode: 5ApU63Iy
 --- !u!1 &694457079
 GameObject:
   m_ObjectHideFlags: 0
@@ -791,7 +792,7 @@ Prefab:
       objectReference: {fileID: 0}
     - target: {fileID: 100268, guid: e39dd657be7298d408f1a135c76c3d9a, type: 2}
       propertyPath: m_IsActive
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
   m_ParentPrefab: {fileID: 100100000, guid: e39dd657be7298d408f1a135c76c3d9a, type: 2}
@@ -844,7 +845,8 @@ Light:
   m_Lightmapping: 4
   m_AreaSize: {x: 1, y: 1}
   m_BounceIntensity: 1
-  m_CCT: 6570
+  m_ColorTemperature: 6570
+  m_UseColorTemperature: 0
   m_ShadowRadius: 0
   m_ShadowAngle: 0
 --- !u!4 &1905880330
@@ -882,7 +884,7 @@ MonoBehaviour:
   m_PrefabParentObject: {fileID: 0}
   m_PrefabInternal: {fileID: 0}
   m_GameObject: {fileID: 1940438374}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 1e0a41bb4997d9340a25d6140b18852e, type: 3}
   m_Name: 
@@ -892,7 +894,7 @@ MonoBehaviour:
   channels:
   - channel_UTCSD
   auths:
-  - Eg1yT9iB
+  - 5ApU63Iy
 --- !u!4 &1940438376
 Transform:
   m_ObjectHideFlags: 0
