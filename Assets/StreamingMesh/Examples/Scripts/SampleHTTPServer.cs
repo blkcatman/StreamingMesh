@@ -14,18 +14,16 @@ using System.Collections.Specialized;
 using System.Linq;
 using System.IO;
 using System.Net;
-using System.Net.Mime;
 using System.Text;
-#if !UNITY_WEBGL
-using System.Threading;
-#endif
 #if UNITY_EDITOR
+using System.Net.Mime;
+using System.Threading;
 using UnityEditor.VersionControl;
 #endif
 
 [ExecuteInEditMode]
 public class SampleHTTPServer : MonoBehaviour {
-#if !UNITY_WEBGL
+#if UNITY_EDITOR
     static Dictionary<string, string> errors = new Dictionary<string, string> {
         {"400", "{\"error\":\"Bad request\"}"},
         {"404", "{\"error\":\"The channel is not found\"}"},

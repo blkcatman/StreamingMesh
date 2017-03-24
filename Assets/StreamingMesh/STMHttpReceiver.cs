@@ -11,6 +11,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace StreamingMesh {
 
@@ -54,8 +55,9 @@ namespace StreamingMesh {
 
 		//temporary buffers
 		List<int[]> indicesBuf = new List<int[]>();
-		List<Vector3[]> vertsBuf = new List<Vector3[]>();
-		List<Vector3[]> vertsBuf_old = new List<Vector3[]>();
+        int currentMesh = 0;
+        Vector3[][] vertsBuf;
+        Vector3[][] vertsBuf_old;
 		Vector3 position;
 		Vector3 position_old;
 		List<int> linedIndices = new List<int>();
@@ -94,8 +96,8 @@ namespace StreamingMesh {
 			streamInfoURL = null;
 
 			indicesBuf.Clear();
-			vertsBuf.Clear();
-			vertsBuf_old.Clear();
+            vertsBuf = null;
+            vertsBuf_old = null;
 			linedIndices.Clear();
 
 			//isConnected = false;
@@ -137,7 +139,10 @@ namespace StreamingMesh {
 			combinedFrames = info.combined_frames;
 			streamInfoURL = info.stream_info;
 
-			foreach(string textureURL in info.textures) {
+            vertsBuf = new Vector3[info.meshes.Count][];
+            vertsBuf_old = new Vector3[info.meshes.Count][];
+
+            foreach (string textureURL in info.textures) {
 				serializer.Request(textureURL);
 				requestQueue++;
 			}
@@ -200,8 +205,9 @@ namespace StreamingMesh {
 
 			filter.mesh = mesh;
 			renderer.materials = materials.ToArray();
-			vertsBuf.Add(new Vector3[mesh.vertexCount]);
-			vertsBuf_old.Add(new Vector3[mesh.vertexCount]);
+            vertsBuf[currentMesh] = new Vector3[mesh.vertexCount];
+            vertsBuf_old[currentMesh] = new Vector3[mesh.vertexCount];
+            currentMesh++;
 
 			meshBuf.Add(mesh);
 			meshObjects.Add(obj);
@@ -384,33 +390,33 @@ namespace StreamingMesh {
 			UpdateVertsInterpolate();
 		}
 
-		void UpdateVertsInterpolate() {
+		unsafe void UpdateVertsInterpolate() {
 			if(timeWeight < 1.0f) {
-                for (int i = 0; i < vertsBuf.Count; i++) {
-                    Vector3[] buf = vertsBuf[i];
+                for (int i = 0; i < vertsBuf.Length; i++) {
+                    int size = vertsBuf[i].Length;
                     Vector3[] tempBuf = vertsBuf_old[i].Clone() as Vector3[];
-                    
-					for(int j = 0; j < tempBuf.Length; j++) {
-                        float cx = tempBuf[j].x;
-                        float cy = tempBuf[j].y;
-                        float cz = tempBuf[j].z;
 
-                        float rx = (buf[j].x - cx) * timeWeight;
-                        float ry = (buf[j].y - cy) * timeWeight;
-                        float rz = (buf[j].z - cz) * timeWeight;
-                        tempBuf[j].Set(cx + rx, cy + ry, cz + rz);
+                    fixed (Vector3 *buf = vertsBuf[i])
+                    fixed (Vector3* tmp = tempBuf) {
+					    for(int j = 0; j < size; j++) {
+                            Vector3* b = buf + j;
+                            Vector3* t = tmp + j;
 
-                        //Vector3 range = buf[j] - tempBuf[j];
-                        //tempBuf[j] += range * timeWeight;
+                            float rx = (b->x - t->x) * timeWeight;
+                            float ry = (b->y - t->y) * timeWeight;
+                            float rz = (b->z - t->z) * timeWeight;
+                            t->x += rx;
+                            t->y += ry;
+                            t->z += rz;
+                        }
                     }
-
                     meshBuf[i].vertices = tempBuf;
-                    if (updateNormals == true) {
+                    if (updateNormals == true)
+                    {
                         meshBuf[i].RecalculateNormals();
                         meshBuf[i].RecalculateBounds();
                         updateNormals = false;
                     }
-                    
                 }
             }
             float c_pX = position_old.x;
@@ -427,93 +433,110 @@ namespace StreamingMesh {
 		bool getErrorData = false;
         bool updateNormals = false;
 
-		public void VerticesReceived(byte[] data)
+		unsafe public void VerticesReceived(byte[] data)
 		{
 			if(isRequestComplete) {
-                for(int i = 0; i < vertsBuf.Count; i++) {
-                    vertsBuf[i].CopyTo(vertsBuf_old[i], 0);
-                }
-                position_old = position;
+                fixed (byte* d = data) {
+                    position_old = position;
 
-				int packages = (data[7] << 16) + (data[6] << 8) + data[5];
-                //bool isCompressed = data[8] == 0x01 ? true : false;
-
-                position.x = BitConverter.ToSingle(data, 9);
-                position.y = BitConverter.ToSingle(data, 13);
-                position.z = BitConverter.ToSingle(data, 17);
-
-				int offset = 21;
-
-				byte[] buf = data;
-
-				if(data[0] == 0x0F) {
-                    updateNormals = true;
-                    linedIndices.Clear();
-
-                    int hk = packageSize / 2;
-                    float qk = areaRange / (float)hk;
-                    float sqk = qk / 32f;
-
-                    for (int i = 0; i < packages; i++) {
-                        float t_x = (buf[offset]     - hk) * qk;
-                        float t_y = (buf[offset + 1] - hk) * qk;
-                        float t_z = (buf[offset + 2] - hk) * qk;
-
-                        int vertCount = (buf[offset + 5] << 16) + (buf[offset + 4] << 8) + buf[offset + 3];
-                        offset += 6;
-						for(int j = 0; j < vertCount; j++) {
-                            int lIdx = offset + j * 5;
-                            int vIdx = (buf[lIdx + 1] << 8) + buf[lIdx];
-                            int mIdx = buf[lIdx + 2];
-                            if(mIdx >= vertsBuf.Count) {
-                                getErrorData = true;
-                                continue;
-                            }
-                            if(vIdx >= vertsBuf[mIdx].Length) {
-                                getErrorData = true;
-                                continue;
-                            }
-
-                            int compress = (buf[lIdx + 4] << 8) + buf[lIdx + 3];
-
-							float v_x = compress & 0x1F;
-							float v_y = (compress >> 5) & 0x1F;
-							float v_z = (compress >> 10) & 0x1F;
-
-                            float x = t_x + v_x * sqk;
-							float y = t_y + v_y * sqk;
-							float z = t_z + v_z * sqk;
-
-                            vertsBuf[mIdx][vIdx].Set(x, y, z);
-
-							linedIndices.Add((mIdx << 16) + vIdx);
-							getErrorData = false;
-						}
-                        if(getErrorData) {
-                            Debug.LogError("data broken in VerticesReceived()");
+                    Vector3*[] vBuf = new Vector3*[vertsBuf.Length];
+                    for (int i = 0; i < vertsBuf.Length; i++) {
+                        fixed(Vector3* vB = &vertsBuf[i][0]) {
+                            vBuf[i] = vB;
                         }
+                        vertsBuf[i].CopyTo(vertsBuf_old[i], 0);
+                    }
+                    fixed (Vector3** v = &vBuf[0])
+                    {
+                        byte* b = d;
+                        byte frame = *b; // frame type
+                        b += 5;
+                        int packages = *(b++);
+                        packages += (*(b++) << 8);
+                        packages += (*(b++) << 16);
+                        //bool isCompressed = *(b+3) == 0x01 ? true : false;
+                        b++;
 
-                        offset += (vertCount * 5);
-					}
-				} else if(data[0] == 0x0E && !getErrorData) {
-                    int i = 0;
-                    const float d = 0.0078125f; // 1 / 128f;
-                    linedIndices.ForEach((idx) => {
-                        int lIdx = offset + i * 3;
-                        int mIdx = (idx >> 16) & 0xFF;
-                        int vIdx = idx & 0xFFFF;
+                        position.x = *b;
+                        b += 4;
+                        position.y = *b;
+                        b += 4;
+                        position.z = *b;
+                        b += 4;
+                        //current offset 21
 
-                        float dx = (buf[lIdx] - 128) * d;
-                        float dy = (buf[lIdx + 1] - 128) * d;
-                        float dz = (buf[lIdx + 2] - 128) * d;
-                        float x = Mathf.Sign(dx) * (dx * dx);
-                        float y = Mathf.Sign(dy) * (dy * dy);
-                        float z = Mathf.Sign(dz) * (dz * dz);
-                        Vector3[] vec = vertsBuf[mIdx];
-                        vec[vIdx].Set(vec[vIdx].x + x, vec[vIdx].y + y, vec[vIdx].z + z);
-                        ++i;
-                    });
-				}
+                        if (frame == 0x0F)
+                        {
+                            updateNormals = true;
+                            linedIndices.Clear();
+
+                            int hk = packageSize / 2;
+                            float qk = areaRange / (float)hk;
+                            float sqk = qk / 32f;
+
+                            for (int i = 0; i < packages; i++)
+                            {
+                                float t_x = (*(b++) - hk) * qk;
+                                float t_y = (*(b++) - hk) * qk;
+                                float t_z = (*(b++) - hk) * qk;
+
+                                int vertCount = *(b++);
+                                vertCount += *(b++) << 8;
+                                vertCount += *(b++) << 16;
+
+                                for (int j = 0; j < vertCount; j++)
+                                {
+                                    int vIdx = *(b++);
+                                    vIdx += *(b++) << 8;
+                                    int mIdx = *(b++);
+                                    if (mIdx >= vertsBuf.Length) {
+                                        getErrorData = true;
+                                        break;
+                                    }
+                                    if (vIdx >= vertsBuf[mIdx].Length) {
+                                        getErrorData = true;
+                                        break;
+                                    }
+
+                                    int compress = *(b++);
+                                    compress += *(b++) << 8;
+
+                                    (*(v+mIdx)+vIdx)->x = t_x + (compress & 0x1F) * sqk;
+                                    (*(v+mIdx)+vIdx)->y = t_y + ((compress >> 5) & 0x1F) * sqk;
+                                    (*(v+mIdx)+vIdx)->z = t_z + ((compress >> 10) & 0x1F) * sqk;
+                                    
+                                    linedIndices.Add((mIdx << 16) + vIdx);
+                                    getErrorData = false;
+                                }
+                                if (getErrorData)
+                                {
+                                    Debug.LogError("data broken in VerticesReceived()");
+                                }
+                            }
+                        }
+                        else if (frame == 0x0E && !getErrorData)
+                        {
+                            const float dd = 0.0078125f; // 1 / 128f;
+                            for(int i = 0; i < linedIndices.Count; i++){
+                                int idx = linedIndices[i];
+                                int mIdx = (idx >> 16) & 0xFF;
+                                int vIdx = idx & 0xFFFF;
+
+                                float dx = (*(b++) - 128) * dd;
+                                float dy = (*(b++) - 128) * dd;
+                                float dz = (*(b++) - 128) * dd;
+
+                                float x = dx < 0 ? -(dx * dx) : (dx * dx);
+                                float y = dy < 0 ? -(dy * dy) : (dy * dy);
+                                float z = dz < 0 ? -(dz * dz) : (dz * dz);
+
+                                (*(v + mIdx) + vIdx)->x += x;
+                                (*(v + mIdx) + vIdx)->y += y;
+                                (*(v + mIdx) + vIdx)->z += z;
+                            };
+                        }
+                    }
+                }
 			}
 			timeWeight = 0.0f;
 		}

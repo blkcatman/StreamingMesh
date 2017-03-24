@@ -22,10 +22,10 @@ namespace StreamingMesh {
 
     [ExecuteInEditMode, RequireComponent(typeof(STMHttpSerializer))]
 	public class STMHttpSender : MonoBehaviour {
-#if !UNITY_WEBGL
+#if UNITY_EDITOR
 		private ComputeShader tiling;
 		private ComputeShader diff;
-#endif
+
         struct TiledVertex {
             public int tileID;
             public int polyIndex;
@@ -73,7 +73,7 @@ namespace StreamingMesh {
         List<byte> combinedBinary;
 
 		public GameObject targetGameObject;
-#if !UNITY_WEBGL
+
         void Awake() {
             tiling = Resources.Load("TilingShader") as ComputeShader;
             diff = Resources.Load("DiffShader") as ComputeShader;
@@ -217,11 +217,10 @@ namespace StreamingMesh {
 		}
 
         void LateUpdate() {
-			#if UNITY_EDITOR
 			if(!Application.isPlaying || !EditorApplication.isPlayingOrWillChangePlaymode) {
 				return;
 			}
-			#endif
+
 
             currentTime += Time.deltaTime;
             if (currentTime > frameInterval) {

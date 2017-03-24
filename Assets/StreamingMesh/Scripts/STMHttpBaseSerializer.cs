@@ -14,7 +14,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Threading;
 using System.Net;
@@ -105,16 +104,17 @@ namespace StreamingMesh {
 				byte[] data = Encoding.UTF8.GetBytes(message);
 				_Send(query, data, false, isAuth);
 			});
-#endif
-			/*
+
+            /*
 			executeOnUpdate.Enqueue(() => {
 				byte[] data = Encoding.UTF8.GetBytes(message);
 				StartCoroutine(_Send(query, data, false, isAuth));
 			});
 			*/
-		}
-
-		void _Send(string query, byte[] data, bool isBinary, bool isAuth) {
+#endif
+        }
+#if UNITY_EDITOR
+        void _Send(string query, byte[] data, bool isBinary, bool isAuth) {
 			if(isAuth && authCode == "") {
 				Debug.LogError("Authentication failed in initial sending!");
 				return;
@@ -153,7 +153,7 @@ namespace StreamingMesh {
 		}
 
 
-		/*
+        /*
 		IEnumerator _Send(string query, byte[] data, bool isBinary, bool isAuth) {
 			if(isAuth && authCode == "") {
 				Debug.LogError("Authentication failed in initial sending!");
@@ -183,7 +183,8 @@ namespace StreamingMesh {
 			waitResponse = false;
 		}
 		*/
-		protected virtual void ProcessRequestedData(KeyValuePair<string, byte[]> pair) {
+#endif
+        protected virtual void ProcessRequestedData(KeyValuePair<string, byte[]> pair) {
 		}
 
 		void OnValidate() {

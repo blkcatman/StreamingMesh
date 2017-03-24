@@ -8,13 +8,12 @@
 
 using UnityEngine;
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 
 public class AudioRecorderOgg : MonoBehaviour {
-
-	int outputRate = 44100;
+#if UNITY_EDITOR
+    int outputRate = 44100;
 
 	const int _headerSize = 44;//wav file header size
 	const float _shortFactor = 32767;
@@ -22,8 +21,8 @@ public class AudioRecorderOgg : MonoBehaviour {
 	FileStream fs;
 	bool recOutput;
 
-	System.Diagnostics.Process process;
-	bool isEncoding = false;
+    System.Diagnostics.Process process;
+    bool isEncoding = false;
 
 	int recInterval = 10;
 	int currentIndex = 0;
@@ -140,5 +139,5 @@ public class AudioRecorderOgg : MonoBehaviour {
 		fs = null;
 	}
 
-
+#endif
 }
