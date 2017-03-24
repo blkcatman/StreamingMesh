@@ -26,12 +26,14 @@ namespace StreamingMesh {
 	}
 	
 	[RequireComponent(typeof(STMHttpSerializer))]
-	public class STMHttpReceiver : MonoBehaviour {
+	public unsafe class STMHttpReceiver : MonoBehaviour {
         public bool referFromSerializer = true;
 		public string streamFile = "stream.json";
+        public float streamRefreshInterval = 10.0f;
+        public int interpolateFrames = 5;
 
-		//serializer and material buffer, texture buffer
-		STMHttpSerializer serializer;
+        //serializer and material buffer, texture buffer
+        STMHttpSerializer serializer;
 		List<KeyValuePair<string, Material>> materialList = new List<KeyValuePair<string, Material>>();
 		List<KeyValuePair<string, Texture2D>> textureList = new List<KeyValuePair<string, Texture2D>>();
 		string streamInfoURL = null;
@@ -42,16 +44,13 @@ namespace StreamingMesh {
 		int subframesPerKeyframe = 4;
 		int combinedFrames = 100;
 
-		public float streamRefreshInterval = 10.0f;
-		float streamCurrentWait = 0.0f;
+		float currentStreamWait = 0.0f;
 		List<int> streamBufferList = new List<int>();
 		List<int[]> streamBufferByteSize = new List<int[]>();
 		List<KeyValuePair<double, byte[]>> bufferedStream = new List<KeyValuePair<double, byte[]>>();
 		int currentBufferIndex;
 		float vertexUpdateInterval = 0.1f;
-		float currentStreamWait = 0.0f;
-
-		public int interpolateFrames = 5;
+		float currentBufferWait = 0.0f;
 
 		//temporary buffers
 		List<int[]> indicesBuf = new List<int[]>();
@@ -62,8 +61,10 @@ namespace StreamingMesh {
 		Vector3 position_old;
 		List<int> linedIndices = new List<int>();
 
-		//gameobjects and meshes
-		List<GameObject> meshObjects = new List<GameObject>();
+        Vector3*[] vBuf;
+
+        //gameobjects and meshes
+        List<GameObject> meshObjects = new List<GameObject>();
 		GameObject localRoot = null;
 		List<Mesh> meshBuf = new List<Mesh>();
 
@@ -99,12 +100,12 @@ namespace StreamingMesh {
             vertsBuf = null;
             vertsBuf_old = null;
 			linedIndices.Clear();
+            vBuf = null;
 
 			//isConnected = false;
 			isRequestComplete = false;
 
-            streamCurrentWait = streamRefreshInterval - 1.0f;
-
+            currentStreamWait = streamRefreshInterval - 1.0f;
         }
 
 		// Use this for initialization
@@ -141,6 +142,7 @@ namespace StreamingMesh {
 
             vertsBuf = new Vector3[info.meshes.Count][];
             vertsBuf_old = new Vector3[info.meshes.Count][];
+            vBuf = new Vector3*[info.meshes.Count];
 
             foreach (string textureURL in info.textures) {
 				serializer.Request(textureURL);
@@ -207,6 +209,9 @@ namespace StreamingMesh {
 			renderer.materials = materials.ToArray();
             vertsBuf[currentMesh] = new Vector3[mesh.vertexCount];
             vertsBuf_old[currentMesh] = new Vector3[mesh.vertexCount];
+            fixed (Vector3* vB = &vertsBuf[currentMesh][0]) {
+                    vBuf[currentMesh] = vB;
+            }
             currentMesh++;
 
 			meshBuf.Add(mesh);
@@ -219,11 +224,10 @@ namespace StreamingMesh {
 			Shader refShader = null;
 			bool result = customShaders.GetTable().TryGetValue(name.TrimEnd('\0'), out refShader);
 			if(result) {
-				if(refShader != null) {
-					mat = new Material(refShader);
-				} else {
-					mat = new Material(defaultShader);
-				}
+				if(refShader != null)
+                    mat = new Material(refShader);
+				else
+                    mat = new Material(defaultShader);
 			} else {
 				mat = new Material(defaultShader);
 			}
@@ -231,36 +235,26 @@ namespace StreamingMesh {
 				foreach(MaterialPropertyInfo tinfo in info.properties) {
 					switch(tinfo.type) {
 					case 0://ShaderUtil.ShaderPropertyType.Color:
-						{
-							Color col = JsonUtility.FromJson<Color>(tinfo.value);
-							mat.SetColor(tinfo.name, col);
-						}
+						Color col = JsonUtility.FromJson<Color>(tinfo.value);
+						mat.SetColor(tinfo.name, col);
 						break;
 					case 1://ShaderUtil.ShaderPropertyType.Vector:
-						{
-							Vector4 vec = JsonUtility.FromJson<Vector4>(tinfo.value);
-							mat.SetVector(tinfo.name, vec);
-						}
+						Vector4 vec = JsonUtility.FromJson<Vector4>(tinfo.value);
+						mat.SetVector(tinfo.name, vec);
 						break;
 					case 2://ShaderUtil.ShaderPropertyType.Float:
-						{
-							float value = JsonUtility.FromJson<float>(tinfo.value);
-							mat.SetFloat(tinfo.name, value);
-						}
+						float fValue = JsonUtility.FromJson<float>(tinfo.value);
+						mat.SetFloat(tinfo.name, fValue);
 						break;
 					case 3://ShaderUtil.ShaderPropertyType.Range:
-						{
-							float value = JsonUtility.FromJson<float>(tinfo.value);
-							mat.SetFloat(tinfo.name, value);
-						}
+						float rValue = JsonUtility.FromJson<float>(tinfo.value);
+						mat.SetFloat(tinfo.name, rValue);
 						break;
 					case 4://ShaderUtil.ShaderPropertyType.TexEnv:
-						{
-							foreach(KeyValuePair<string, Texture2D> pair in textureList) {
-								if (pair.Key == tinfo.value) {
-									Texture2D texture = pair.Value;
-									mat.SetTexture(tinfo.name, pair.Value);
-								}
+						foreach(KeyValuePair<string, Texture2D> pair in textureList) {
+							if (pair.Key == tinfo.value) {
+								Texture2D texture = pair.Value;
+								mat.SetTexture(tinfo.name, pair.Value);
 							}
 						}
 						break;
@@ -333,29 +327,29 @@ namespace StreamingMesh {
             }
 			
 			if (isRequestComplete && requestQueue < 1) {
-				streamCurrentWait += Time.deltaTime;
-				if (streamCurrentWait > streamRefreshInterval) {
-					if (streamInfoURL != null) {
-						serializer.Request(streamInfoURL);
-					}
-					streamCurrentWait -= streamRefreshInterval;
-				}
-
                 float delta = Time.deltaTime;
 
                 currentStreamWait += delta;
-                if (currentStreamWait > vertexUpdateInterval) {
+				if (currentStreamWait > streamRefreshInterval) {
+					if (streamInfoURL != null) {
+						serializer.Request(streamInfoURL);
+					}
+					currentStreamWait -= streamRefreshInterval;
+				}
+
+                currentBufferWait += delta;
+                if (currentBufferWait > vertexUpdateInterval) {
 					if (currentBufferIndex < bufferedStream.Count) {
 						//Debug.Log("UpdateTime:" + bufferedStream[currentIndex].Key);
 						VerticesReceived(bufferedStream[currentBufferIndex].Value);
 						currentBufferIndex++;
 					}
-					currentStreamWait -= vertexUpdateInterval;
+					currentBufferWait -= vertexUpdateInterval;
 				}
 
 				currentInterporateWait += delta;
-                if (currentInterporateWait > frameInterval / (float)interpolateFrames) {
-					currentInterporateWait -= frameInterval / (float)interpolateFrames;
+                if (currentInterporateWait > frameInterval / interpolateFrames) {
+					currentInterporateWait -= frameInterval / interpolateFrames;
 					UpdateVertsInterpolate();
 				}
 			}
@@ -385,12 +379,12 @@ namespace StreamingMesh {
 			VerticesReceived(data);
 			VerticesReceived(data);
 			currentBufferIndex++;
-			currentStreamWait = 0;
+			currentBufferWait = 0;
 			currentInterporateWait = 0;
 			UpdateVertsInterpolate();
 		}
 
-		unsafe void UpdateVertsInterpolate() {
+		void UpdateVertsInterpolate() {
 			if(timeWeight < 1.0f) {
                 for (int i = 0; i < vertsBuf.Length; i++) {
                     int size = vertsBuf[i].Length;
@@ -433,112 +427,108 @@ namespace StreamingMesh {
 		bool getErrorData = false;
         bool updateNormals = false;
 
-		unsafe public void VerticesReceived(byte[] data)
+		public void VerticesReceived(byte[] data)
 		{
-			if(isRequestComplete) {
-                fixed (byte* d = data) {
-                    position_old = position;
+            if(!isRequestComplete) return;
 
-                    Vector3*[] vBuf = new Vector3*[vertsBuf.Length];
-                    for (int i = 0; i < vertsBuf.Length; i++) {
-                        fixed(Vector3* vB = &vertsBuf[i][0]) {
-                            vBuf[i] = vB;
-                        }
-                        vertsBuf[i].CopyTo(vertsBuf_old[i], 0);
-                    }
-                    fixed (Vector3** v = &vBuf[0])
+            fixed (byte* d = data)
+            fixed (Vector3** v = &vBuf[0]) {
+            position_old = position;
+
+            for (int i = 0; i < vertsBuf.Length; i++)
+                vertsBuf[i].CopyTo(vertsBuf_old[i], 0);
+
+                byte* b = d;
+                byte frame = *b; // frame type
+                b += 5;
+                int packages = *(b++);
+                packages += (*(b++) << 8);
+                packages += (*(b++) << 16);
+                //bool isCompressed = *(b+3) == 0x01 ? true : false;
+                b++;
+
+                position.x = *(float*)b;
+                b += 4;
+                position.y = *(float*)b;
+                b += 4;
+                position.z = *(float*)b;
+                b += 4;
+                //current offset 21
+
+                if (frame == 0x0F)
+                {
+                    updateNormals = true;
+                    linedIndices.Clear();
+
+                    int hk = packageSize / 2;
+                    float qk = areaRange / (float)hk;
+                    float sqk = qk / 32f;
+
+                    for (int i = 0; i < packages; i++)
                     {
-                        byte* b = d;
-                        byte frame = *b; // frame type
-                        b += 5;
-                        int packages = *(b++);
-                        packages += (*(b++) << 8);
-                        packages += (*(b++) << 16);
-                        //bool isCompressed = *(b+3) == 0x01 ? true : false;
-                        b++;
+                        float t_x = (*(b++) - hk) * qk;
+                        float t_y = (*(b++) - hk) * qk;
+                        float t_z = (*(b++) - hk) * qk;
 
-                        position.x = *b;
-                        b += 4;
-                        position.y = *b;
-                        b += 4;
-                        position.z = *b;
-                        b += 4;
-                        //current offset 21
+                        int vertCount = *(b++);
+                        vertCount += *(b++) << 8;
+                        vertCount += *(b++) << 16;
 
-                        if (frame == 0x0F)
+                        for (int j = 0; j < vertCount; j++)
                         {
-                            updateNormals = true;
-                            linedIndices.Clear();
-
-                            int hk = packageSize / 2;
-                            float qk = areaRange / (float)hk;
-                            float sqk = qk / 32f;
-
-                            for (int i = 0; i < packages; i++)
-                            {
-                                float t_x = (*(b++) - hk) * qk;
-                                float t_y = (*(b++) - hk) * qk;
-                                float t_z = (*(b++) - hk) * qk;
-
-                                int vertCount = *(b++);
-                                vertCount += *(b++) << 8;
-                                vertCount += *(b++) << 16;
-
-                                for (int j = 0; j < vertCount; j++)
-                                {
-                                    int vIdx = *(b++);
-                                    vIdx += *(b++) << 8;
-                                    int mIdx = *(b++);
-                                    if (mIdx >= vertsBuf.Length) {
-                                        getErrorData = true;
-                                        break;
-                                    }
-                                    if (vIdx >= vertsBuf[mIdx].Length) {
-                                        getErrorData = true;
-                                        break;
-                                    }
-
-                                    int compress = *(b++);
-                                    compress += *(b++) << 8;
-
-                                    (*(v+mIdx)+vIdx)->x = t_x + (compress & 0x1F) * sqk;
-                                    (*(v+mIdx)+vIdx)->y = t_y + ((compress >> 5) & 0x1F) * sqk;
-                                    (*(v+mIdx)+vIdx)->z = t_z + ((compress >> 10) & 0x1F) * sqk;
-                                    
-                                    linedIndices.Add((mIdx << 16) + vIdx);
-                                    getErrorData = false;
-                                }
-                                if (getErrorData)
-                                {
-                                    Debug.LogError("data broken in VerticesReceived()");
-                                }
+                            int vIdx = *(b++);
+                            vIdx += *(b++) << 8;
+                            int mIdx = *(b++);
+                            if (mIdx >= vertsBuf.Length) {
+                                getErrorData = true;
+                                break;
                             }
+                            if (vIdx >= vertsBuf[mIdx].Length) {
+                                getErrorData = true;
+                                break;
+                            }
+
+                            int compress = *(b++);
+                            compress += *(b++) << 8;
+
+                            (*(v+mIdx)+vIdx)->x = t_x + (compress & 0x1F) * sqk;
+                            (*(v+mIdx)+vIdx)->y = t_y + ((compress >> 5) & 0x1F) * sqk;
+                            (*(v+mIdx)+vIdx)->z = t_z + ((compress >> 10) & 0x1F) * sqk;
+                                    
+                            linedIndices.Add((mIdx << 16) + vIdx);
+                            getErrorData = false;
                         }
-                        else if (frame == 0x0E && !getErrorData)
+                        if (getErrorData)
                         {
-                            const float dd = 0.0078125f; // 1 / 128f;
-                            for(int i = 0; i < linedIndices.Count; i++){
-                                int idx = linedIndices[i];
-                                int mIdx = (idx >> 16) & 0xFF;
-                                int vIdx = idx & 0xFFFF;
-
-                                float dx = (*(b++) - 128) * dd;
-                                float dy = (*(b++) - 128) * dd;
-                                float dz = (*(b++) - 128) * dd;
-
-                                float x = dx < 0 ? -(dx * dx) : (dx * dx);
-                                float y = dy < 0 ? -(dy * dy) : (dy * dy);
-                                float z = dz < 0 ? -(dz * dz) : (dz * dz);
-
-                                (*(v + mIdx) + vIdx)->x += x;
-                                (*(v + mIdx) + vIdx)->y += y;
-                                (*(v + mIdx) + vIdx)->z += z;
-                            };
+                            Debug.LogError("data broken in VerticesReceived()");
                         }
                     }
                 }
-			}
+                else if (frame == 0x0E && !getErrorData)
+                {
+                    const float dd = 0.0078125f; // 1 / 128f;
+                    for(int i = 0; i < linedIndices.Count; i++){
+                        int idx = linedIndices[i];
+                        int mIdx = (idx >> 16) & 0xFF;
+                        int vIdx = idx & 0xFFFF;
+
+                        float dx = (*(b++) - 128) * dd;
+                        float dy = (*(b++) - 128) * dd;
+                        float dz = (*(b++) - 128) * dd;
+
+                        float x = dx < 0 ? -(dx * dx) : (dx * dx);
+                        float y = dy < 0 ? -(dy * dy) : (dy * dy);
+                        float z = dz < 0 ? -(dz * dz) : (dz * dz);
+
+                        (*(v + mIdx) + vIdx)->x += x;
+                        (*(v + mIdx) + vIdx)->y += y;
+                        (*(v + mIdx) + vIdx)->z += z;
+                    };
+                }
+            }
 			timeWeight = 0.0f;
 		}
+
+
 	}
 }
