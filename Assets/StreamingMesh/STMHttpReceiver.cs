@@ -45,20 +45,29 @@ namespace StreamingMesh {
 		int combinedFrames = 100;
 
 		float currentStreamWait = 0.0f;
-		List<int> streamBufferList = new List<int>();
+        float currentBufferWait = 0.0f;
+        float currentInterporateWait = 0.0f;
+
+        List<int> streamBufferList = new List<int>();
 		List<int[]> streamBufferByteSize = new List<int[]>();
 		List<KeyValuePair<double, byte[]>> bufferedStream = new List<KeyValuePair<double, byte[]>>();
 		int currentBufferIndex;
 		float vertexUpdateInterval = 0.1f;
-		float currentBufferWait = 0.0f;
 
-		//temporary buffers
-		List<int[]> indicesBuf = new List<int[]>();
+        bool getErrorData = false;
+        bool updateNormals = false;
+
+        //temporary buffers
+        List<int[]> indicesBuf = new List<int[]>();
         int currentMesh = 0;
         Vector3[][] vertsBuf;
         Vector3[][] vertsBuf_old;
-		Vector3 position;
-		Vector3 position_old;
+        float pos_x;
+        float pos_y;
+        float pos_z;
+        float old_x;
+        float old_y;
+        float old_z;
 		List<int> linedIndices = new List<int>();
 
         Vector3*[] vBuf;
@@ -71,7 +80,6 @@ namespace StreamingMesh {
 		bool isRequestComplete = false;
 		int requestQueue = 0;
 
-		float currentInterporateWait = 0.0f;
 		float timeWeight = 0.0f;
 
 		//Shaders
@@ -219,51 +227,50 @@ namespace StreamingMesh {
 			requestQueue--;
 		}
 
-		void OnMaterialInfoReceived(string name, MaterialInfo info) {
+		void OnMaterialInfoReceived(string name, MaterialInfo matInfo) {
 			Material mat;
 			Shader refShader = null;
 			bool result = customShaders.GetTable().TryGetValue(name.TrimEnd('\0'), out refShader);
-			if(result) {
-				if(refShader != null)
-                    mat = new Material(refShader);
-				else
-                    mat = new Material(defaultShader);
-			} else {
+			if(result)
+                mat = new Material(refShader);
+			else
 				mat = new Material(defaultShader);
-			}
+
 			if (mat != null) {
-				foreach(MaterialPropertyInfo tinfo in info.properties) {
-					switch(tinfo.type) {
+				foreach(MaterialPropertyInfo info in matInfo.properties) {
+					switch(info.type) {
 					case 0://ShaderUtil.ShaderPropertyType.Color:
-						Color col = JsonUtility.FromJson<Color>(tinfo.value);
-						mat.SetColor(tinfo.name, col);
+						Color col = JsonUtility.FromJson<Color>(info.value);
+						mat.SetColor(info.name, col);
 						break;
 					case 1://ShaderUtil.ShaderPropertyType.Vector:
-						Vector4 vec = JsonUtility.FromJson<Vector4>(tinfo.value);
-						mat.SetVector(tinfo.name, vec);
+						Vector4 vec = JsonUtility.FromJson<Vector4>(info.value);
+						mat.SetVector(info.name, vec);
 						break;
 					case 2://ShaderUtil.ShaderPropertyType.Float:
-						float fValue = JsonUtility.FromJson<float>(tinfo.value);
-						mat.SetFloat(tinfo.name, fValue);
+						float fValue = JsonUtility.FromJson<float>(info.value);
+						mat.SetFloat(info.name, fValue);
 						break;
 					case 3://ShaderUtil.ShaderPropertyType.Range:
-						float rValue = JsonUtility.FromJson<float>(tinfo.value);
-						mat.SetFloat(tinfo.name, rValue);
+						float rValue = JsonUtility.FromJson<float>(info.value);
+						mat.SetFloat(info.name, rValue);
 						break;
 					case 4://ShaderUtil.ShaderPropertyType.TexEnv:
 						foreach(KeyValuePair<string, Texture2D> pair in textureList) {
-							if (pair.Key == tinfo.value) {
+							if (pair.Key == info.value) {
 								Texture2D texture = pair.Value;
-								mat.SetTexture(tinfo.name, pair.Value);
+								mat.SetTexture(info.name, pair.Value);
 							}
 						}
 						break;
 					}
 				}
 				//end of foreach
-			}
+			} else {
+                Debug.LogError("Not found ANY shader!");
+            }
 
-			KeyValuePair<string, Material> matPair = new KeyValuePair<string, Material>(info.name, mat);
+			KeyValuePair<string, Material> matPair = new KeyValuePair<string, Material>(matInfo.name, mat);
 			materialList.Add(matPair);
 			requestQueue--;
 		}
@@ -314,8 +321,8 @@ namespace StreamingMesh {
 
 		bool onlyOnce = false;
 
-		// Update is called once per frame
-		void Update() {
+        // Update is called once per frame
+        void Update() {
 
 			if(bufferedStream.Count > 0 && !onlyOnce) {
 				var player = FindObjectOfType<AudioPlayerOgg>();
@@ -392,40 +399,35 @@ namespace StreamingMesh {
 
                     fixed (Vector3 *buf = vertsBuf[i])
                     fixed (Vector3* tmp = tempBuf) {
-					    for(int j = 0; j < size; j++) {
-                            Vector3* b = buf + j;
-                            Vector3* t = tmp + j;
-
+                        Vector3* b = buf;
+                        Vector3* t = tmp;
+                        for (int j = 0; j < size; j++) {
                             float rx = (b->x - t->x) * timeWeight;
                             float ry = (b->y - t->y) * timeWeight;
                             float rz = (b->z - t->z) * timeWeight;
                             t->x += rx;
                             t->y += ry;
                             t->z += rz;
+                            b++;
+                            t++;
                         }
                     }
                     meshBuf[i].vertices = tempBuf;
-                    if (updateNormals == true)
-                    {
+                    if (updateNormals == true) {
                         meshBuf[i].RecalculateNormals();
                         meshBuf[i].RecalculateBounds();
                         updateNormals = false;
                     }
                 }
+
+                float w_x = (pos_x - old_x) * timeWeight;
+                float w_y = (pos_y - old_y) * timeWeight;
+                float w_z = (pos_z - old_z) * timeWeight;
+                localRoot.transform.localPosition = new Vector3(old_x + w_x, old_y + w_y, old_z + w_z);
+
+                timeWeight += 1.0f / interpolateFrames;
             }
-            float c_pX = position_old.x;
-            float c_pY = position_old.y;
-            float c_pZ = position_old.z;
-            float r_pX = (position.x - c_pX) * timeWeight;
-            float r_pY = (position.y - c_pY) * timeWeight;
-            float r_pZ = (position.z - c_pZ) * timeWeight;
-            localRoot.transform.localPosition.Set(c_pX + r_pX, c_pY + r_pY, c_pZ + r_pZ);
-
-            timeWeight += 1.0f / interpolateFrames;
 		}
-
-		bool getErrorData = false;
-        bool updateNormals = false;
 
 		public void VerticesReceived(byte[] data)
 		{
@@ -433,12 +435,14 @@ namespace StreamingMesh {
 
             fixed (byte* d = data)
             fixed (Vector3** v = &vBuf[0]) {
-            position_old = position;
-
-            for (int i = 0; i < vertsBuf.Length; i++)
-                vertsBuf[i].CopyTo(vertsBuf_old[i], 0);
-
                 byte* b = d;
+
+                old_x = pos_x;
+                old_y = pos_y;
+                old_z = pos_z;
+                for (int i = 0; i < vertsBuf.Length; i++)
+                    vertsBuf[i].CopyTo(vertsBuf_old[i], 0);
+
                 byte frame = *b; // frame type
                 b += 5;
                 int packages = *(b++);
@@ -447,35 +451,32 @@ namespace StreamingMesh {
                 //bool isCompressed = *(b+3) == 0x01 ? true : false;
                 b++;
 
-                position.x = *(float*)b;
+                pos_x = *(float*)b;
                 b += 4;
-                position.y = *(float*)b;
+                pos_y = *(float*)b;
                 b += 4;
-                position.z = *(float*)b;
+                pos_z = *(float*)b;
                 b += 4;
                 //current offset 21
 
-                if (frame == 0x0F)
-                {
+                if (frame == 0x0F) {
                     updateNormals = true;
                     linedIndices.Clear();
 
-                    int hk = packageSize / 2;
-                    float qk = areaRange / (float)hk;
-                    float sqk = qk / 32f;
+                    int hk = packageSize/2;
+                    float qk = areaRange/(float)hk;
+                    float sqk = qk/32f;
 
-                    for (int i = 0; i < packages; i++)
-                    {
-                        float t_x = (*(b++) - hk) * qk;
-                        float t_y = (*(b++) - hk) * qk;
-                        float t_z = (*(b++) - hk) * qk;
+                    for (int i = 0; i < packages; i++) {
+                        float t_x = (*(b++) - hk)*qk;
+                        float t_y = (*(b++) - hk)*qk;
+                        float t_z = (*(b++) - hk)*qk;
 
                         int vertCount = *(b++);
                         vertCount += *(b++) << 8;
                         vertCount += *(b++) << 16;
 
-                        for (int j = 0; j < vertCount; j++)
-                        {
+                        for (int j = 0; j < vertCount; j++) {
                             int vIdx = *(b++);
                             vIdx += *(b++) << 8;
                             int mIdx = *(b++);
@@ -498,31 +499,25 @@ namespace StreamingMesh {
                             linedIndices.Add((mIdx << 16) + vIdx);
                             getErrorData = false;
                         }
-                        if (getErrorData)
-                        {
+                        if (getErrorData) {
                             Debug.LogError("data broken in VerticesReceived()");
                         }
                     }
-                }
-                else if (frame == 0x0E && !getErrorData)
-                {
-                    const float dd = 0.0078125f; // 1 / 128f;
-                    for(int i = 0; i < linedIndices.Count; i++){
+                } else if (frame == 0x0E && !getErrorData) {
+                    //const float dd = 0.0078125f; // 1 / 128f;
+                    const float dd = 0.00006103515625f; // 1 / 16384f;
+                    for (int i = 0; i < linedIndices.Count; i++) {
                         int idx = linedIndices[i];
                         int mIdx = (idx >> 16) & 0xFF;
                         int vIdx = idx & 0xFFFF;
 
-                        float dx = (*(b++) - 128) * dd;
-                        float dy = (*(b++) - 128) * dd;
-                        float dz = (*(b++) - 128) * dd;
-
-                        float x = dx < 0 ? -(dx * dx) : (dx * dx);
-                        float y = dy < 0 ? -(dy * dy) : (dy * dy);
-                        float z = dz < 0 ? -(dz * dz) : (dz * dz);
-
-                        (*(v + mIdx) + vIdx)->x += x;
-                        (*(v + mIdx) + vIdx)->y += y;
-                        (*(v + mIdx) + vIdx)->z += z;
+                        //((a - 128)/128)^2 = ((a-128)^2)/16384;
+                        int dx = *(b++) - 128;
+                        int dy = *(b++) - 128;
+                        int dz = *(b++) - 128;
+                        (*(v+mIdx)+vIdx)->x += dx < 0 ? -(dx*dx)*dd : (dx*dx)*dd;
+                        (*(v+mIdx)+vIdx)->y += dy < 0 ? -(dy*dy)*dd : (dy*dy)*dd;
+                        (*(v+mIdx)+vIdx)->z += dz < 0 ? -(dz*dz)*dd : (dz*dz)*dd;
                     };
                 }
             }

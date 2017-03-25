@@ -562,7 +562,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &693137059
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -604,9 +604,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f3c7d8c937bfa864eabce6a02ee4500e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  address: http://127.0.0.1:8080/channels/
+  address: http://192.168.11.9:8080/channels/
   channel: channel_UTCSD
-  authCode: 5ApU63Iy
+  authCode: 0zy8kM8j
 --- !u!1 &694457079
 GameObject:
   m_ObjectHideFlags: 0
@@ -623,7 +623,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &694457080
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -792,7 +792,7 @@ Prefab:
       objectReference: {fileID: 0}
     - target: {fileID: 100268, guid: e39dd657be7298d408f1a135c76c3d9a, type: 2}
       propertyPath: m_IsActive
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     m_RemovedComponents: []
   m_ParentPrefab: {fileID: 100100000, guid: e39dd657be7298d408f1a135c76c3d9a, type: 2}
@@ -884,17 +884,17 @@ MonoBehaviour:
   m_PrefabParentObject: {fileID: 0}
   m_PrefabInternal: {fileID: 0}
   m_GameObject: {fileID: 1940438374}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 1e0a41bb4997d9340a25d6140b18852e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  url: http://127.0.0.1:8080/
+  url: http://192.168.11.9:8080/
   lastMinOnly: 0
   channels:
   - channel_UTCSD
   auths:
-  - 5ApU63Iy
+  - 0zy8kM8j
 --- !u!4 &1940438376
 Transform:
   m_ObjectHideFlags: 0

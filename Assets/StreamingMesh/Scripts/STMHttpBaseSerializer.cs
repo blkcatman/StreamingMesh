@@ -231,9 +231,9 @@ namespace StreamingMesh {
 				executeOnUpdate.Dequeue().Invoke();
 			}
 #endif
-			if (requestBuffer.Count > 0) {
+			if (requestBuffer.Count > 0 && process_speed > 0.1f) {
 				//Debug.Log("CALL time: " + process_speed);
-				//process_speed = 0f;
+				process_speed = 0f;
 				ProcessRequestedData(requestBuffer.Dequeue());
 			}
 		}
