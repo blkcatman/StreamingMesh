@@ -7,11 +7,9 @@
 //
 
 using UnityEngine;
-using System.Collections;
 using System.Collections.Generic;
 using System;
 using System.IO;
-using System.Runtime.InteropServices;
 
 namespace StreamingMesh {
 
@@ -26,7 +24,7 @@ namespace StreamingMesh {
 	}
 	
 	[RequireComponent(typeof(STMHttpSerializer))]
-	public unsafe class STMHttpReceiver : MonoBehaviour {
+	public class STMHttpReceiver : MonoBehaviour {
         public bool referFromSerializer = true;
 		public string streamFile = "stream.json";
         public float streamRefreshInterval = 10.0f;
@@ -46,7 +44,7 @@ namespace StreamingMesh {
 
 		float currentStreamWait = 0.0f;
         float currentBufferWait = 0.0f;
-        float currentInterporateWait = 0.0f;
+        float currentInterpolateWait = 0.0f;
 
         List<int> streamBufferList = new List<int>();
 		List<int[]> streamBufferByteSize = new List<int[]>();
@@ -69,8 +67,6 @@ namespace StreamingMesh {
         float old_y;
         float old_z;
 		List<int> linedIndices = new List<int>();
-
-        Vector3*[] vBuf;
 
         //gameobjects and meshes
         List<GameObject> meshObjects = new List<GameObject>();
@@ -108,7 +104,6 @@ namespace StreamingMesh {
             vertsBuf = null;
             vertsBuf_old = null;
 			linedIndices.Clear();
-            vBuf = null;
 
 			//isConnected = false;
 			isRequestComplete = false;
@@ -150,7 +145,6 @@ namespace StreamingMesh {
 
             vertsBuf = new Vector3[info.meshes.Count][];
             vertsBuf_old = new Vector3[info.meshes.Count][];
-            vBuf = new Vector3*[info.meshes.Count];
 
             foreach (string textureURL in info.textures) {
 				serializer.Request(textureURL);
@@ -177,6 +171,8 @@ namespace StreamingMesh {
 			Vector3[] verts = new Vector3[info.vertexCount];
 			mesh.SetVertices(new List<Vector3>(verts));
 			mesh.subMeshCount = info.subMeshCount;
+            mesh.bounds = new Bounds(
+                Vector3.zero, new Vector3(areaRange/2, areaRange, areaRange/2));
 
 			List<int> multiIndices = info.indices;
 			int offset = 0;
@@ -217,9 +213,6 @@ namespace StreamingMesh {
 			renderer.materials = materials.ToArray();
             vertsBuf[currentMesh] = new Vector3[mesh.vertexCount];
             vertsBuf_old[currentMesh] = new Vector3[mesh.vertexCount];
-            fixed (Vector3* vB = &vertsBuf[currentMesh][0]) {
-                    vBuf[currentMesh] = vB;
-            }
             currentMesh++;
 
 			meshBuf.Add(mesh);
@@ -354,9 +347,9 @@ namespace StreamingMesh {
 					currentBufferWait -= vertexUpdateInterval;
 				}
 
-				currentInterporateWait += delta;
-                if (currentInterporateWait > frameInterval / interpolateFrames) {
-					currentInterporateWait -= frameInterval / interpolateFrames;
+				currentInterpolateWait += delta;
+                if (currentInterpolateWait > frameInterval / interpolateFrames) {
+					currentInterpolateWait -= frameInterval / interpolateFrames;
 					UpdateVertsInterpolate();
 				}
 			}
@@ -387,11 +380,11 @@ namespace StreamingMesh {
 			VerticesReceived(data);
 			currentBufferIndex++;
 			currentBufferWait = 0;
-			currentInterporateWait = 0;
+			currentInterpolateWait = 0;
 			UpdateVertsInterpolate();
 		}
 
-		void UpdateVertsInterpolate() {
+		unsafe void UpdateVertsInterpolate() {
 			if(timeWeight < 1.0f) {
                 for (int i = 0; i < vertsBuf.Length; i++) {
                     int size = vertsBuf[i].Length;
@@ -415,7 +408,6 @@ namespace StreamingMesh {
                     meshBuf[i].vertices = tempBuf;
                     if (updateNormals == true) {
                         meshBuf[i].RecalculateNormals();
-                        meshBuf[i].RecalculateBounds();
                         updateNormals = false;
                     }
                 }
@@ -429,19 +421,20 @@ namespace StreamingMesh {
             }
 		}
 
-		public void VerticesReceived(byte[] data)
+		unsafe public void VerticesReceived(byte[] data)
 		{
             if(!isRequestComplete) return;
 
-            fixed (byte* d = data)
-            fixed (Vector3** v = &vBuf[0]) {
+            fixed (byte* d = data) {
                 byte* b = d;
 
                 old_x = pos_x;
                 old_y = pos_y;
                 old_z = pos_z;
-                for (int i = 0; i < vertsBuf.Length; i++)
+
+                for (int i = 0; i < vertsBuf.Length; i++) {
                     vertsBuf[i].CopyTo(vertsBuf_old[i], 0);
+                }
 
                 byte frame = *b; // frame type
                 b += 5;
@@ -492,10 +485,15 @@ namespace StreamingMesh {
                             int compress = *(b++);
                             compress += *(b++) << 8;
 
-                            (*(v+mIdx)+vIdx)->x = t_x + (compress & 0x1F) * sqk;
-                            (*(v+mIdx)+vIdx)->y = t_y + ((compress >> 5) & 0x1F) * sqk;
-                            (*(v+mIdx)+vIdx)->z = t_z + ((compress >> 10) & 0x1F) * sqk;
-                                    
+                            //(*(v+mIdx)+vIdx)->x = t_x + (compress & 0x1F) * sqk;
+                            //(*(v+mIdx)+vIdx)->y = t_y + ((compress >> 5) & 0x1F) * sqk;
+                            //(*(v+mIdx)+vIdx)->z = t_z + ((compress >> 10) & 0x1F) * sqk;
+                            vertsBuf[mIdx][vIdx].Set(
+                                t_x + (compress & 0x1F) * sqk,
+                                t_y + ((compress >> 5) & 0x1F) * sqk,
+                                t_z + ((compress >> 10) & 0x1F) * sqk
+                            );
+
                             linedIndices.Add((mIdx << 16) + vIdx);
                             getErrorData = false;
                         }
@@ -515,10 +513,13 @@ namespace StreamingMesh {
                         int dx = *(b++) - 128;
                         int dy = *(b++) - 128;
                         int dz = *(b++) - 128;
-                        (*(v+mIdx)+vIdx)->x += dx < 0 ? -(dx*dx)*dd : (dx*dx)*dd;
-                        (*(v+mIdx)+vIdx)->y += dy < 0 ? -(dy*dy)*dd : (dy*dy)*dd;
-                        (*(v+mIdx)+vIdx)->z += dz < 0 ? -(dz*dz)*dd : (dz*dz)*dd;
-                    };
+                        //(*(v+mIdx)+vIdx)->x += dx < 0 ? -(dx*dx)*dd : (dx*dx)*dd;
+                        //(*(v+mIdx)+vIdx)->y += dy < 0 ? -(dy*dy)*dd : (dy*dy)*dd;
+                        //(*(v+mIdx)+vIdx)->z += dz < 0 ? -(dz*dz)*dd : (dz*dz)*dd;
+                        vertsBuf[mIdx][vIdx].x += dx < 0 ? -(dx*dx)*dd : (dx*dx)*dd;
+                        vertsBuf[mIdx][vIdx].y += dy < 0 ? -(dy*dy)*dd : (dy*dy)*dd;
+                        vertsBuf[mIdx][vIdx].z += dz < 0 ? -(dz*dz)*dd : (dz*dz)*dd;
+                    }
                 }
             }
 			timeWeight = 0.0f;

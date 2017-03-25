@@ -562,7 +562,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &693137059
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -623,7 +623,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &694457080
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -666,7 +666,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f3c7d8c937bfa864eabce6a02ee4500e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  address: http://127.0.0.1:8080/channels/
+  address: http://192.168.11.9:8080/channels/
   channel: channel_UTCSD
   authCode: 
 --- !u!1 &913347666 stripped

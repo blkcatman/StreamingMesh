@@ -8,7 +8,6 @@
 
 using UnityEngine;
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.Linq;
@@ -185,7 +184,8 @@ public class SampleHTTPServer : MonoBehaviour {
 
 				res.StatusCode = (int)HttpStatusCode.OK;
 				res.ContentType = MediaTypeNames.Text.Plain;
-				SendText(outputText, res);
+                res.ContentLength64 = Encoding.UTF8.GetByteCount(outputText);
+                SendText(outputText, res);
 			}
 		} else {
 			OnError(req, res, "400");
