@@ -50,7 +50,7 @@ namespace StreamingMesh {
 
 		IEnumerator _Request(string URL, bool isBinary, Action<byte[]> action) {
 			string addr = URL;
-			Debug.Log("REQ: " + addr);
+			//Debug.Log("REQ: " + addr);
 
 			waitResponse = true;
 			Dictionary<string, string> headers = new Dictionary<string, string>();

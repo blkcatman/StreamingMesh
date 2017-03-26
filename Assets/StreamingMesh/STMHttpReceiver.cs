@@ -58,8 +58,8 @@ namespace StreamingMesh {
         //temporary buffers
         List<int[]> indicesBuf = new List<int[]>();
         int currentMesh = 0;
-        Vector3[][] vertsBuf;
-        Vector3[][] vertsBuf_old;
+        float[][] vertsBuf;
+        float[][] vertsBuf_old;
         float pos_x;
         float pos_y;
         float pos_z;
@@ -143,8 +143,8 @@ namespace StreamingMesh {
 			combinedFrames = info.combined_frames;
 			streamInfoURL = info.stream_info;
 
-            vertsBuf = new Vector3[info.meshes.Count][];
-            vertsBuf_old = new Vector3[info.meshes.Count][];
+            vertsBuf = new float[info.meshes.Count][];
+            vertsBuf_old = new float[info.meshes.Count][];
 
             foreach (string textureURL in info.textures) {
 				serializer.Request(textureURL);
@@ -211,8 +211,8 @@ namespace StreamingMesh {
 
 			filter.mesh = mesh;
 			renderer.materials = materials.ToArray();
-            vertsBuf[currentMesh] = new Vector3[mesh.vertexCount];
-            vertsBuf_old[currentMesh] = new Vector3[mesh.vertexCount];
+            vertsBuf[currentMesh] = new float[mesh.vertexCount * 3];
+            vertsBuf_old[currentMesh] = new float[mesh.vertexCount * 3];
             currentMesh++;
 
 			meshBuf.Add(mesh);
@@ -299,7 +299,8 @@ namespace StreamingMesh {
 					List<byte> rawBuffer = new List<byte>(STMHttpBaseSerializer.Decompress(data));
 					List<KeyValuePair<double, byte[]>> buffers = new List<KeyValuePair<double, byte[]>>();
 					int cnt = 0;
-					foreach(int size in streamBufferByteSize[index]) {
+					for(int i = 0; i < streamBufferByteSize[index].Length; i++) {
+						int size = streamBufferByteSize[index][i];
 						double time = index * 10 + (double)cnt * 0.1;
 						byte[] buf = rawBuffer.GetRange(0, size).ToArray();
 						buffers.Add(new KeyValuePair<double, byte[]>(time, buf));
@@ -387,25 +388,28 @@ namespace StreamingMesh {
 		unsafe void UpdateVertsInterpolate() {
 			if(timeWeight < 1.0f) {
                 for (int i = 0; i < vertsBuf.Length; i++) {
-                    int size = vertsBuf[i].Length;
-                    Vector3[] tempBuf = vertsBuf_old[i].Clone() as Vector3[];
+                    int size = vertsBuf[i].Length / 3;
 
-                    fixed (Vector3 *buf = vertsBuf[i])
-                    fixed (Vector3* tmp = tempBuf) {
-                        Vector3* b = buf;
-                        Vector3* t = tmp;
+					Vector3[] tempBuf = new Vector3[size];
+
+					fixed (Vector3 *tmp = tempBuf)
+                    fixed (float *buf = vertsBuf[i])
+					fixed (float *old = vertsBuf_old[i]) {
+						Vector3* t = tmp;
+                        float* b = buf;
+                        float* o = old;
                         for (int j = 0; j < size; j++) {
-                            float rx = (b->x - t->x) * timeWeight;
-                            float ry = (b->y - t->y) * timeWeight;
-                            float rz = (b->z - t->z) * timeWeight;
-                            t->x += rx;
-                            t->y += ry;
-                            t->z += rz;
-                            b++;
-                            t++;
+							float ox = *(o++);
+							float oy = *(o++);
+							float oz = *(o++);
+							t->x = ox + (*(b++) - ox) * timeWeight;
+							t->y = oy + (*(b++) - oy) * timeWeight;
+							t->z = oz + (*(b++) - oz) * timeWeight;
+							t++;
                         }
                     }
                     meshBuf[i].vertices = tempBuf;
+					tempBuf = null;
                     if (updateNormals == true) {
                         meshBuf[i].RecalculateNormals();
                         updateNormals = false;
@@ -433,7 +437,7 @@ namespace StreamingMesh {
                 old_z = pos_z;
 
                 for (int i = 0; i < vertsBuf.Length; i++) {
-                    vertsBuf[i].CopyTo(vertsBuf_old[i], 0);
+					Buffer.BlockCopy(vertsBuf[i], 0, vertsBuf_old[i], 0, vertsBuf[i].Length * sizeof(float));
                 }
 
                 byte frame = *b; // frame type
@@ -477,7 +481,7 @@ namespace StreamingMesh {
                                 getErrorData = true;
                                 break;
                             }
-                            if (vIdx >= vertsBuf[mIdx].Length) {
+                            if (vIdx >= vertsBuf[mIdx].Length / 3) {
                                 getErrorData = true;
                                 break;
                             }
@@ -488,11 +492,9 @@ namespace StreamingMesh {
                             //(*(v+mIdx)+vIdx)->x = t_x + (compress & 0x1F) * sqk;
                             //(*(v+mIdx)+vIdx)->y = t_y + ((compress >> 5) & 0x1F) * sqk;
                             //(*(v+mIdx)+vIdx)->z = t_z + ((compress >> 10) & 0x1F) * sqk;
-                            vertsBuf[mIdx][vIdx].Set(
-                                t_x + (compress & 0x1F) * sqk,
-                                t_y + ((compress >> 5) & 0x1F) * sqk,
-                                t_z + ((compress >> 10) & 0x1F) * sqk
-                            );
+							vertsBuf[mIdx][vIdx*3    ] = t_x + (compress & 0x1F) * sqk;
+							vertsBuf[mIdx][vIdx*3 + 1] = t_y + ((compress >> 5) & 0x1F) * sqk;
+							vertsBuf[mIdx][vIdx*3 + 2] =  t_z + ((compress >> 10) & 0x1F) * sqk;
 
                             linedIndices.Add((mIdx << 16) + vIdx);
                             getErrorData = false;
@@ -516,9 +518,9 @@ namespace StreamingMesh {
                         //(*(v+mIdx)+vIdx)->x += dx < 0 ? -(dx*dx)*dd : (dx*dx)*dd;
                         //(*(v+mIdx)+vIdx)->y += dy < 0 ? -(dy*dy)*dd : (dy*dy)*dd;
                         //(*(v+mIdx)+vIdx)->z += dz < 0 ? -(dz*dz)*dd : (dz*dz)*dd;
-                        vertsBuf[mIdx][vIdx].x += dx < 0 ? -(dx*dx)*dd : (dx*dx)*dd;
-                        vertsBuf[mIdx][vIdx].y += dy < 0 ? -(dy*dy)*dd : (dy*dy)*dd;
-                        vertsBuf[mIdx][vIdx].z += dz < 0 ? -(dz*dz)*dd : (dz*dz)*dd;
+                        vertsBuf[mIdx][vIdx*3    ] += dx < 0 ? -(dx*dx)*dd : (dx*dx)*dd;
+                        vertsBuf[mIdx][vIdx*3 + 1] += dy < 0 ? -(dy*dy)*dd : (dy*dy)*dd;
+                        vertsBuf[mIdx][vIdx*3 + 2] += dz < 0 ? -(dz*dz)*dd : (dz*dz)*dd;
                     }
                 }
             }

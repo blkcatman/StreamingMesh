@@ -38,7 +38,7 @@ RenderSettings:
   m_ReflectionIntensity: 1
   m_CustomReflection: {fileID: 0}
   m_Sun: {fileID: 0}
-  m_IndirectSpecularColor: {r: 0.44657898, g: 0.4964133, b: 0.5748178, a: 1}
+  m_IndirectSpecularColor: {r: 0.44657844, g: 0.49641222, b: 0.57481694, a: 1}
 --- !u!157 &3
 LightmapSettings:
   m_ObjectHideFlags: 0
@@ -604,7 +604,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f3c7d8c937bfa864eabce6a02ee4500e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  address: http://192.168.11.9:8080/channels/
+  address: http://127.0.0.1:8080/channels/
   channel: channel_UTCSD
   authCode: 0zy8kM8j
 --- !u!1 &694457079
@@ -666,7 +666,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f3c7d8c937bfa864eabce6a02ee4500e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  address: http://192.168.11.9:8080/channels/
+  address: http://127.0.0.1:8080/channels/
   channel: channel_UTCSD
   authCode: 
 --- !u!1 &913347666 stripped
@@ -792,7 +792,7 @@ Prefab:
       objectReference: {fileID: 0}
     - target: {fileID: 100268, guid: e39dd657be7298d408f1a135c76c3d9a, type: 2}
       propertyPath: m_IsActive
-      value: 1
+      value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
   m_ParentPrefab: {fileID: 100100000, guid: e39dd657be7298d408f1a135c76c3d9a, type: 2}
@@ -889,7 +889,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 1e0a41bb4997d9340a25d6140b18852e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  url: http://192.168.11.9:8080/
+  url: http://127.0.0.1:8080/
   lastMinOnly: 0
   channels:
   - channel_UTCSD
