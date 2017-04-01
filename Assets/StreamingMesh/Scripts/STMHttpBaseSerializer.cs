@@ -34,25 +34,27 @@ namespace StreamingMesh {
         public string authCode = "";
 
         public readonly Queue<Action> executeOnUpdate = new Queue<Action>();
-		public readonly Queue<KeyValuePair<string, byte[]>> requestBuffer = new Queue<KeyValuePair<string, byte[]>>();
+		public readonly Queue<KeyValuePair<string, byte[]>> processBuffer = new Queue<KeyValuePair<string, byte[]>>();
 		bool waitResponse = false;
+
 #if UNITY_EDITOR
 		Thread thread;
 #endif
 
 		protected void Request(string filename, bool isBinary) {
-			StartCoroutine(_Request(filename, isBinary, new Action<byte[]>((outBytes) =>
-				executeOnUpdate.Enqueue(() => {
-					requestBuffer.Enqueue(new KeyValuePair<string, byte[]>(filename, outBytes));
-				})
-			)));
-		}
+            executeOnUpdate.Enqueue(() => {
+                StartCoroutine(_Request(filename, isBinary, new Action<byte[]>((outBytes) => {
+                    processBuffer.Enqueue(new KeyValuePair<string, byte[]>(filename, outBytes));
+                })));
+            });
+        }
 
 		IEnumerator _Request(string URL, bool isBinary, Action<byte[]> action) {
 			string addr = URL;
-			//Debug.Log("REQ: " + addr);
+			Debug.Log("REQ: " + addr);
 
 			waitResponse = true;
+            /*
 			Dictionary<string, string> headers = new Dictionary<string, string>();
 			headers.Add("Content-Type",  (isBinary ? "application/octet-stream" : "text/plain"));
 			WWW request = new WWW(addr, null, headers );
@@ -60,8 +62,8 @@ namespace StreamingMesh {
 			if (request.error == null) {
 				action(request.bytes);
 			}
-
-			/*
+            */
+			
 			UnityWebRequest request = new UnityWebRequest(addr, "GET");
 			request.downloadHandler = (DownloadHandler) new DownloadHandlerBuffer();
 			request.SetRequestHeader("Content-Type",  (isBinary ? "application/octet-stream" : "text/plain"));
@@ -75,13 +77,13 @@ namespace StreamingMesh {
 					if (isBinary) {
 						action(request.downloadHandler.data);
 					} else {
-						Debug.Log(request.downloadHandler.text);
+						//Debug.Log(request.downloadHandler.text);
 						byte[] buf = Encoding.UTF8.GetBytes(request.downloadHandler.text);
 						action(buf);
 					}
 				}
 			}
-			*/
+			
 			waitResponse = false;
 		}
 
@@ -98,11 +100,11 @@ namespace StreamingMesh {
 			*/
 		}
 
-		protected void Send(string query, string message, bool isAuth) {
+		protected void Send(string query, string message, bool isAuth, bool isJson = false) {
 #if UNITY_EDITOR
 			executeOnUpdate.Enqueue(() => {
 				byte[] data = Encoding.UTF8.GetBytes(message);
-				_Send(query, data, false, isAuth);
+				_Send(query, data, false, isAuth, isJson);
 			});
 
             /*
@@ -114,7 +116,7 @@ namespace StreamingMesh {
 #endif
         }
 #if UNITY_EDITOR
-        void _Send(string query, byte[] data, bool isBinary, bool isAuth) {
+        void _Send(string query, byte[] data, bool isBinary, bool isAuth, bool isJson = false) {
 			if(isAuth && authCode == "") {
 				Debug.LogError("Authentication failed in initial sending!");
 				return;
@@ -122,9 +124,13 @@ namespace StreamingMesh {
 			string addr = address + channel + "/?" +
 				(isAuth ? "auth=" + this.authCode + "&" : "") + query;
 			Debug.Log("SEND: " + addr);
-			try {
-				WebRequest req = WebRequest.Create(addr);
-				req.ContentType = isBinary ? "application/octet-stream" : "text/plain";
+            try {
+                WebRequest req = WebRequest.Create(addr);
+                if (isJson) {
+                    req.ContentType = "application/json";
+                } else {
+                    req.ContentType = isBinary ? "application/octet-stream" : "text/plain";
+                }
 				req.Method = "POST";
 				req.ContentLength = data.Length;
 				waitResponse = true;
@@ -195,46 +201,14 @@ namespace StreamingMesh {
                   .Select(s => s[random.Next(s.Length)]).ToArray());
             }
         }
-#if UNITY_EDITOR
-		void OnEnable() {
-			thread = new Thread(ThreadUpdate);
-			try {
-				thread.Start();
-			} catch(ThreadStartException ex) {
-				Debug.LogError(ex.Source);
-			}
-		}
-
-		void OnDisable() {
-			if(thread != null) {
-				thread.Abort();
-			}
-		}
-
-		void ThreadUpdate() {
-			while(true) {
-				Thread.Sleep(0);
-				lock (executeOnUpdate) {
-					if(executeOnUpdate.Count > 0 && waitResponse == false) {
-						executeOnUpdate.Dequeue().Invoke();
-					}
-				}
-			}
-		}
-#endif
-		float process_speed = 0f;
 
 		void Update() {
-			process_speed += Time.deltaTime;
-#if !UNITY_EDITOR
 			if(executeOnUpdate.Count > 0 && waitResponse == false) {
 				executeOnUpdate.Dequeue().Invoke();
 			}
-#endif
-			if (requestBuffer.Count > 0 && process_speed > 0.2f) {
-				//Debug.Log("CALL time: " + process_speed);
-				process_speed = 0f;
-				ProcessRequestedData(requestBuffer.Dequeue());
+
+            if (processBuffer.Count > 0) {
+				ProcessRequestedData(processBuffer.Dequeue());
 			}
 		}
 

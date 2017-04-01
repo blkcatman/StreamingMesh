@@ -42,7 +42,7 @@ namespace StreamingMesh {
 		int subframesPerKeyframe = 4;
 		int combinedFrames = 100;
 
-		float currentStreamWait = 0.0f;
+		float currentStreamWait = 9.0f;
         float currentBufferWait = 0.0f;
         float currentInterpolateWait = 0.0f;
 
@@ -60,12 +60,8 @@ namespace StreamingMesh {
         int currentMesh = 0;
         float[][] vertsBuf;
         float[][] vertsBuf_old;
-        float pos_x;
-        float pos_y;
-        float pos_z;
-        float old_x;
-        float old_y;
-        float old_z;
+        float pos_x, pos_y, pos_z;
+        float old_x, old_y, old_z;
 		List<int> linedIndices = new List<int>();
 
         //gameobjects and meshes
@@ -316,17 +312,7 @@ namespace StreamingMesh {
 		bool onlyOnce = false;
 
         // Update is called once per frame
-        void Update() {
-
-			if(bufferedStream.Count > 0 && !onlyOnce) {
-				var player = FindObjectOfType<AudioPlayerOgg>();
-				if(player != null) {
-					player.StartLoading();
-					Invoke("SeekToZero", 1f);
-				}
-                onlyOnce = true;
-            }
-			
+        void Update() {	
 			if (isRequestComplete && requestQueue < 1) {
                 float delta = Time.deltaTime;
 
@@ -341,7 +327,6 @@ namespace StreamingMesh {
                 currentBufferWait += delta;
                 if (currentBufferWait > vertexUpdateInterval) {
 					if (currentBufferIndex < bufferedStream.Count) {
-						//Debug.Log("UpdateTime:" + bufferedStream[currentIndex].Key);
 						VerticesReceived(bufferedStream[currentBufferIndex].Value);
 						currentBufferIndex++;
 					}
