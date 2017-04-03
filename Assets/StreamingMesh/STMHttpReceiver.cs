@@ -42,7 +42,7 @@ namespace StreamingMesh {
 		int subframesPerKeyframe = 4;
 		int combinedFrames = 100;
 
-		float currentStreamWait = 9.0f;
+		float currentStreamWait = 0.0f;
         float currentBufferWait = 0.0f;
         float currentInterpolateWait = 0.0f;
 
@@ -123,7 +123,7 @@ namespace StreamingMesh {
 		void InitializeReceiver() {
 			serializer = gameObject.GetComponent<STMHttpSerializer>();
 
-			serializer.OnChannelInfoReceived = OnInitialDataReceived;
+			serializer.OnChannelInfoReceived = OnChannelInfoReceived;
 			serializer.OnMeshInfoReceived = OnMeshInfoReceived;
 			serializer.OnMaterialInfoReceived = OnMaterialInfoReceived;
 			serializer.OnTextureReceived = OnTextureReceived;
@@ -132,7 +132,7 @@ namespace StreamingMesh {
 			serializer.OnStreamReceived = OnStreamDataReceived;
 		}
 
-		void OnInitialDataReceived(string name, ChannelInfo info) {
+		void OnChannelInfoReceived(string name, ChannelInfo info) {
 			areaRange = info.area_range;
 			packageSize = info.package_size;
 			frameInterval = info.frame_interval;
