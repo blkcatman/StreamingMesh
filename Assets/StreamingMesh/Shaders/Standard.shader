@@ -1,12 +1,4 @@
-﻿//Standard.shader
-//
-//Copyright (c) 2017 Tatsuro Matsubara.
-//Creative Commons License
-//This file is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License.
-//https://creativecommons.org/licenses/by-sa/4.0/
-//
-
-Shader "StreamingMesh/Standard" {
+﻿Shader "StreamingMesh/Standard" {
 	Properties {
 		_Color ("Color", Color) = (1,1,1,1)
 		_MainTex ("Albedo (RGB)", 2D) = "white" {}

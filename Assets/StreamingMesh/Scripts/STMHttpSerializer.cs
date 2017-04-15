@@ -1,12 +1,4 @@
-﻿// STMHttpSerializer.cs
-//
-//Copyright (c) 2017 Tatsuro Matsubara.
-//Creative Commons License
-//This file is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License.
-//https://creativecommons.org/licenses/by-sa/4.0/
-//
-
-using System;
+﻿using System;
 using System.IO;
 using UnityEngine;
 using System.Collections.Generic;
@@ -32,7 +24,14 @@ namespace StreamingMesh {
 		public List<string> meshes;
 		public List<string> materials;
 		public List<string> textures;
+		public List<int> meshSizes;
+		public List<int> materialSizes;
+		public List<int> textureSizes;
+		public string data;
 		public string stream_info;
+		public string audio_info;
+		public string audio_clip;
+
 	}
 
 	[Serializable]
@@ -53,7 +52,7 @@ namespace StreamingMesh {
 	public class MaterialInfo : BaseInfo {
 		public string name;
 		public List<MaterialPropertyInfo> properties;
-    }
+  }
 
 	[Serializable]
 	public class MaterialPropertyInfo {
@@ -62,18 +61,24 @@ namespace StreamingMesh {
 		public string value;
 	}
 
-    [Serializable]
-    public class StreamInfo : BaseInfo {
-		public string name;
-        public List<int> size;
-    }
+		[Serializable]
+	public class StreamInfo : BaseInfo {
+		public string video;
+		public long startTicks;
+		public long endTicks;
+	}
+	public class AudioInfo : BaseInfo {
+		public string audio;
+	}
 
-    [Serializable]
-    public class StatusInfo {
-        public string stat;
-    }
+	[Serializable]
+	public class StatusInfo {
+		public string stat;
+	}
 
 	public class STMHttpSerializer : STMHttpBaseSerializer {
+
+		public bool useLocalFiles = true;
 
 		public ChannelInfo CreateChannelInfo(
 			int areaRange,
@@ -82,7 +87,11 @@ namespace StreamingMesh {
 			int comvinedFrames,
 			List<string> meshNames,
 			List<string> materialNames,
-			List<string> textureNames) {
+			List<string> textureNames,
+			List<int> meshSizes,
+			List<int> materialSizes,
+			List<int> textureSizes
+) {
 #if UNITY_EDITOR
 			ChannelInfo channelInfo = new ChannelInfo {
 				area_range = areaRange,
@@ -92,7 +101,12 @@ namespace StreamingMesh {
 				meshes = meshNames,
 				materials = materialNames,
 				textures = textureNames,
-				stream_info = ""
+				meshSizes = meshSizes,
+				materialSizes = materialSizes,
+				textureSizes = textureSizes,
+				data = "stream.bin",
+				stream_info = "stream.stmj",
+				audio_info = "stream.stma"
 			};
 			return channelInfo;
 #else
@@ -110,7 +124,7 @@ namespace StreamingMesh {
 				name = mesh.name,
 				vertexCount = mesh.vertexCount,
 				subMeshCount = mesh.subMeshCount,
-                uv = mesh.uv,
+				uv = mesh.uv,
 				uv2 = mesh.uv2,
 				uv3 = mesh.uv3,
 				uv4 = mesh.uv4
@@ -125,7 +139,7 @@ namespace StreamingMesh {
 				int[] indices = mesh.GetIndices(i);
 				meshInfo.indicesCounts.Add(indices.Length);
 				meshInfo.indices.AddRange(indices);
-            }
+			}
 
 			return meshInfo;
 #else
@@ -210,13 +224,12 @@ namespace StreamingMesh {
 #endif
 		}
 
-		byte[] GetTextureToPNGByteArray(Texture texture, bool isReimportTexture) {
+		public static byte[] GetTextureToPNGByteArray(Texture texture, bool isReimportTexture) {
 #if UNITY_EDITOR
 			if(texture == null) {
 				return null;
 			}
 
-			TextureImporterFormat oldImporterFormat = new TextureImporterFormat();
 			bool oldReadable = false;
 			TextureImporterCompression oldCompression = TextureImporterCompression.Uncompressed;
 			if(isReimportTexture) {
@@ -224,16 +237,15 @@ namespace StreamingMesh {
 				string pass = AssetDatabase.GetAssetPath(texture);
 				TextureImporter ti = TextureImporter.GetAtPath(pass) as TextureImporter;
 				oldReadable = ti.isReadable;
-				oldImporterFormat = ti.textureFormat;
 				oldCompression = ti.textureCompression;
 				ti.isReadable = true;
-				ti.textureFormat = TextureImporterFormat.RGBA32;
 				ti.textureCompression = TextureImporterCompression.Uncompressed;
 				AssetDatabase.ImportAsset(pass);
 			}
 
 			//Convert the texture to raw PNG data
 			Texture2D tex = texture as Texture2D;
+			//Debug.Log(texture.name);
 			byte[] data = tex.EncodeToPNG();
 
 			if(isReimportTexture) {
@@ -241,7 +253,6 @@ namespace StreamingMesh {
 				string pass = AssetDatabase.GetAssetPath(texture);
 				TextureImporter ti = TextureImporter.GetAtPath(pass) as TextureImporter;
 				ti.isReadable = oldReadable;
-				ti.textureFormat = oldImporterFormat;
 				ti.textureCompression = oldCompression;
 				AssetDatabase.ImportAsset(pass);
 			}
@@ -252,32 +263,61 @@ namespace StreamingMesh {
 #endif
 		}
 
-        public StreamInfo CreateStreamInfo(long tickCnt, List<int> byteSize) {
+		public StreamInfo CreateStreamInfo(long tickCnt,long startTicks, long endTicks) {
 #if UNITY_EDITOR
 			StreamInfo streamInfo = new StreamInfo() {
-				name = tickCnt.ToString("000000") + ".stmv",
-                size = byteSize
-            };
-
-            return streamInfo;
+				video = tickCnt.ToString("000000") + ".stmv",
+				startTicks = startTicks,
+				endTicks = endTicks,
+			};
+			return streamInfo;
 #else
 			return null;
 #endif
-        }
+		}
+
+		public AudioInfo CreateAudioInfo(long tickCnt) {
+#if UNITY_EDITOR
+			AudioInfo audioInfo = new AudioInfo() {
+				//audio = tickCnt.ToString("000000") + ".ogg"
+				//audio = tickCnt.ToString("000000") + ".m4a"
+				audio = tickCnt.ToString("000000")
+			};
+			return audioInfo;
+#else
+			return null;
+#endif
+		}
 
 		public delegate void ChannelInfoReceived(string name, ChannelInfo info);
-		public delegate void MeshInfoReceived(string name, MeshInfo info);
-		public delegate void MaterialInfoReceived(string name, MaterialInfo info);
-		public delegate void TextureReceived(string name, Texture2D texture);
+		//public delegate void MeshInfoReceived(string name, MeshInfo info);
+		//public delegate void MaterialInfoReceived(string name, MaterialInfo info);
+		//public delegate void TextureReceived(string name, Texture2D texture);
+		public delegate void CombinedDataReceived(string name, byte[] data);
 		public delegate void StreamListReceived(string name, string list);
 		public delegate void StreamReceived(string name, byte[] data);
+		public delegate void AudioListReceived(string name, string list);
+		public delegate void AudioReceived(string name, AudioClip audio);
+		public delegate void ReceivedFragmentData(int currentBytes, int ContentLength);
 
 		public ChannelInfoReceived OnChannelInfoReceived;
-		public MeshInfoReceived OnMeshInfoReceived;
-		public MaterialInfoReceived OnMaterialInfoReceived;
-		public TextureReceived OnTextureReceived;
+		//public MeshInfoReceived OnMeshInfoReceived;
+		//public MaterialInfoReceived OnMaterialInfoReceived;
+		//public TextureReceived OnTextureReceived;
+		public CombinedDataReceived OnCombinedDataReceived;
 		public StreamListReceived OnStreamListReceived;
 		public StreamReceived OnStreamReceived;
+
+		public AudioListReceived OnAudioListReceived;
+		public AudioReceived OnAudioReceived;
+
+		public ReceivedFragmentData OnReceivedFragmentData;
+
+		protected override void OnReceivedFragment(int currentBytes, int contentLength) {
+			if(OnReceivedFragmentData != null) {
+				OnReceivedFragmentData(currentBytes, contentLength);
+			}
+		}
 
 		protected override void ProcessRequestedData(KeyValuePair<string, byte[]> pair) {
 			string fileName = pair.Key;
@@ -287,6 +327,11 @@ namespace StreamingMesh {
 			if (ext.Contains("stmv")) {
 				if (OnStreamReceived != null) {
 					OnStreamReceived(name, data);
+				}
+			} else if (ext.Contains("stma")) {
+				if(OnAudioListReceived != null) {
+					string listData = Encoding.UTF8.GetString(data);
+					OnAudioListReceived(name, listData);
 				}
 			} else if (ext.Contains("stmj")) {
 				string listData = Encoding.UTF8.GetString(data);
@@ -299,6 +344,7 @@ namespace StreamingMesh {
 					if (OnChannelInfoReceived != null) {
 						OnChannelInfoReceived(name, JsonUtility.FromJson<ChannelInfo>(json));
 					}
+				/* 
 				} else if (name.Contains("mesh")) {
 					if (OnMeshInfoReceived != null) {
 						OnMeshInfoReceived(name, JsonUtility.FromJson<MeshInfo>(json));
@@ -307,28 +353,56 @@ namespace StreamingMesh {
 					if(OnMaterialInfoReceived != null) {
 						OnMaterialInfoReceived(name, JsonUtility.FromJson<MaterialInfo>(json));
 					}
+				*/
 				}
+			/*
 			} else if (ext.Contains("png")) {
 				if (OnTextureReceived != null) {
 					Texture2D texture = new Texture2D(2, 2);
 					texture.LoadImage(data);
 					OnTextureReceived(name, texture);
 				}
+			*/
+			} else if (ext.Contains("bin")) {
+				if (OnCombinedDataReceived != null) {
+					OnCombinedDataReceived(name, data);
+				}
+			}
+		}
+
+		protected override void ProcessRequestedData(KeyValuePair<string, AudioClip> pair) {
+			string fileName = pair.Key;
+			AudioClip audio = pair.Value;
+			string name = Path.GetFileNameWithoutExtension(fileName);
+			if(OnAudioReceived != null) {
+				OnAudioReceived(name, audio);
 			}
 		}
 
 		public void Request(string fileName) {
 			string ext = Path.GetExtension(fileName);
 			if (ext.Contains("stmv")) {
-				base.Request(fileName, true);
+				base.Request(base.address + base.channel + "/" + fileName, true);
 			} else if (ext.Contains("stmj")) {
-				base.Request(fileName, false);
+				base.Request(base.address + base.channel + "/" + fileName, false);
+			} else if (ext.Contains("stma")) {
+				base.Request(base.address + base.channel + "/" + fileName, false);
 			} else if(ext.Contains("json")) {
-				base.Request(fileName, false);
+				base.Request(base.address + base.channel + "/" + fileName, false);
+			/*
 			} else if (ext.Contains("png")) {
 				base.Request(fileName, true);
+			}*/
+			} else if (ext.Contains("bin")) {
+				base.Request(base.address + base.channel + "/" + fileName, true);
+			} else { // audio files
+#if !UNITY_EDITOR && UNITY_IOS
+        ext = ".m4a";
+#else
+        ext = ".ogg";
+#endif
+				base.Request(base.address + base.channel + "/" + fileName + ext, true, true);
 			}
-
 		}
 
 		public void Send(ChannelInfo channelInfo) {
@@ -336,31 +410,54 @@ namespace StreamingMesh {
 			base.Send("channel=" + base.channel, json, false);
 		}
 
-        public void Send(MeshInfo meshInfo, int index) {
-            string json = JsonUtility.ToJson(meshInfo);
-            base.Send("mesh=" + index.ToString(), json, true);
-        }
+    /*
+		public void Send(MeshInfo meshInfo, int index) {
+			string json = JsonUtility.ToJson(meshInfo);
+			base.Send("mesh=" + index.ToString(), json, true);
+		}
 
-        public void Send(MaterialInfo materialInfo, int index) {
-            string json = JsonUtility.ToJson(materialInfo);
-            base.Send("material=" + index.ToString(), json, true);
-        }
+		public void Send(MaterialInfo materialInfo, int index) {
+			string json = JsonUtility.ToJson(materialInfo);
+			base.Send("material=" + index.ToString(), json, true);
+		}
 
-        public void Send(Texture texture, bool isReimportTexture) {
-            byte[] binary = GetTextureToPNGByteArray(texture, isReimportTexture);
-            base.Send("texture=" + texture.name + ".png", binary, true);
-        }
+		public void Send(Texture texture, bool isReimportTexture) {
+			byte[] binary = GetTextureToPNGByteArray(texture, isReimportTexture);
+			base.Send("texture=" + texture.name + ".png", binary, true);
+		}
+    */
 
-        public void Send(StreamInfo streamInfo, long ticks) {
-            string json = JsonUtility.ToJson(streamInfo);
-            base.Send("streaminfo=" + ticks.ToString("000000"), json, true);
-        }
+		public void Send(StreamInfo streamInfo, long ticks) {
+			string json = JsonUtility.ToJson(streamInfo);
+			base.Send("streaminfo=" + ticks.ToString("000000"), json, true, true);
+		}
 
-        public void Send(byte[] stream, long ticks) {
-            base.Send("stream=" + ticks.ToString("000000") + ".stmv", stream, true);
-        }
+		public void Send(AudioInfo audioInfo, long ticks) {
+			string json = JsonUtility.ToJson(audioInfo);
+			base.Send("audioinfo=" + ticks.ToString("000000"), json, true, true);
+		}
 
+		public void Send(byte[] stream, string query, string fileName) {
+			base.Send(query + "=" + fileName, stream, true);
+		}
 
+		public void Send(byte[] combinedBuffer) {
+			base.Send("combined=" + "stream.bin", combinedBuffer, true);
+		}
+
+		void SaveToJson(string path, string data) {
+			StreamWriter sw = new StreamWriter(path);
+			sw.Write(data);
+			sw.Close();
+		}
+
+		void SaveToBinary(string path, byte[] data) {
+			FileStream fs = new FileStream(path, FileMode.OpenOrCreate);
+			BinaryWriter bw = new BinaryWriter(fs);
+			bw.Write(data);
+			bw.Close();
+			fs.Close();
+		}
 	}
 
 }

@@ -1,12 +1,4 @@
-﻿//STMHttpSenderEditor.cs
-//
-//Copyright (c) 2017 Tatsuro Matsubara.
-//Creative Commons License
-//This file is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License.
-//https://creativecommons.org/licenses/by-sa/4.0/
-//
-
-using UnityEngine;
+﻿using UnityEngine;
 
 #if UNITY_EDITOR
 using UnityEditor;
@@ -16,7 +8,7 @@ using StreamingMesh;
 
 [CustomEditor(typeof(STMHttpSender))]
 public class STMHttpSenderEditor : Editor {
-#if !UNITY_WEBGL
+#if UNITY_EDITOR
 	public override void OnInspectorGUI() {
 		DrawDefaultInspector();
 		serializedObject.Update();
@@ -33,6 +25,15 @@ public class STMHttpSenderEditor : Editor {
                 obj.CreateChannel();
             }
         }
-	}
+
+        GUILayout.Space(15);
+
+        if (GUILayout.Button("Start Recording")) {
+            if (obj.targetGameObject != null) {
+                Debug.Log("Start Recording...");
+                obj.Record();
+            }
+        }
+    }
 #endif
 }
