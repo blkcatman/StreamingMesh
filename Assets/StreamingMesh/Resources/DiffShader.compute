@@ -1,0 +1,66 @@
+﻿//DiffShader.compute
+//
+//Copyright (c) 2017 Tatsuro Matsubara.
+//Creative Commons License
+//This file is licensed under a Creative Commons Attribution-ShareAlike 4.0 International License.
+//https://creativecommons.org/licenses/by-sa/4.0/
+//
+
+#pragma kernel cs_main8
+#pragma kernel cs_main32
+#pragma kernel cs_main128
+#pragma kernel cs_main512
+
+struct FragmentVertex {
+	uint x;
+	uint y;
+	uint z;
+};
+
+float4x4 wrdMatrix;
+float4x4 oldMatrix;
+//float4x4 viewInverse;
+
+StructuredBuffer<float3> srcBuf;
+StructuredBuffer<float3> oldBuf;
+RWStructuredBuffer<FragmentVertex> destBuf;
+
+void doEvents(int3 id) {
+	uint x, y, z;
+	float3 pos = mul( float4(srcBuf[id.x], 1.0), wrdMatrix).xyz;
+	float3 old = mul( float4(oldBuf[id.x], 1.0), oldMatrix).xyz;
+
+	float3 sub = pos - old;
+
+	x = clamp(floor(sign(sub.x) * pow(abs(sub.x), 0.5) * 128.0 + 128.0), 0, 255);
+	y = clamp(floor(sign(sub.y) * pow(abs(sub.y), 0.5) * 128.0 + 128.0), 0, 255);
+	z = clamp(floor(sign(sub.z) * pow(abs(sub.z), 0.5) * 128.0 + 128.0), 0, 255);
+
+	destBuf[id.x].x = x;
+	destBuf[id.x].y = y;
+	destBuf[id.x].z = z;
+}
+
+[numthreads(8,1,1)]
+void cs_main8 (int3 id : SV_DispatchThreadID)
+{
+	doEvents(id);
+}
+
+[numthreads(32,1,1)]
+void cs_main32 (int3 id : SV_DispatchThreadID)
+{
+	doEvents(id);
+}
+
+[numthreads(128,1,1)]
+void cs_main128 (int3 id : SV_DispatchThreadID)
+{
+	doEvents(id);
+}
+
+[numthreads(512,1,1)]
+void cs_main512 (int3 id : SV_DispatchThreadID)
+{
+	doEvents(id);
+}
