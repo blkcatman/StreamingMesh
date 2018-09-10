@@ -1,5 +1,4 @@
 # StreamingMesh v0.1
-# Authored 
 
 CAUTION
 
