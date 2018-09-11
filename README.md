@@ -1,6 +1,6 @@
 # StreamingMesh v0.1
 
-Authored by blkcatman
+
 
 CAUTION
 
