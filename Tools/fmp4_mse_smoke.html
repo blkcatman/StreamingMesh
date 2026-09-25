@@ -1,0 +1,60 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>StreamingMesh fMP4 MSE smoke test</title>
+<body data-result="running">running</body>
+<script>
+(async () => {
+  const body = document.body;
+  const base = new URLSearchParams(location.search).get("base");
+  const mime = 'audio/mp4; codecs="mp4a.40.2"';
+  const fail = error => {
+    body.dataset.result = "failed";
+    body.textContent = String(error && error.stack || error);
+  };
+  try {
+    if (!base) throw new Error("Missing ?base= channel URL");
+    if (!MediaSource.isTypeSupported(mime)) throw new Error("AAC fMP4 MSE is unsupported");
+    const audio = document.createElement("audio");
+    audio.muted = true;
+    audio.autoplay = true;
+    const mediaSource = new MediaSource();
+    audio.src = URL.createObjectURL(mediaSource);
+    document.body.appendChild(audio);
+    await new Promise(resolve => mediaSource.addEventListener("sourceopen", resolve, { once: true }));
+    const sourceBuffer = mediaSource.addSourceBuffer(mime);
+    const append = async bytes => {
+      await new Promise((resolve, reject) => {
+        sourceBuffer.addEventListener("updateend", resolve, { once: true });
+        sourceBuffer.addEventListener("error", reject, { once: true });
+        sourceBuffer.appendBuffer(bytes);
+      });
+    };
+    const getBytes = async name => {
+      const response = await fetch(new URL(name, base), { cache: "no-store" });
+      if (!response.ok) throw new Error(`${name}: HTTP ${response.status}`);
+      return response.arrayBuffer();
+    };
+    await append(await getBytes("audio-init.mp4"));
+    const playlistResponse = await fetch(new URL("stream.stma", base), { cache: "no-store" });
+    if (!playlistResponse.ok) throw new Error(`stream.stma: HTTP ${playlistResponse.status}`);
+    const entries = (await playlistResponse.text()).trim().split(/\r?\n/).map(JSON.parse);
+    for (const entry of entries) await append(await getBytes(entry.audio));
+    if (!audio.buffered.length || audio.buffered.end(0) <= 0) throw new Error("No buffered audio");
+    const markPassed = async () => {
+      await audio.play();
+      await new Promise(resolve => setTimeout(resolve, 500));
+      body.dataset.result = "passed";
+      body.textContent = `passed: buffered=${audio.buffered.end(0).toFixed(3)}s currentTime=${audio.currentTime.toFixed(3)}s`;
+    };
+    try {
+      await markPassed();
+    } catch (autoplayError) {
+      body.dataset.result = "awaiting-gesture";
+      body.textContent = `buffered=${audio.buffered.end(0).toFixed(3)}s; click to test playback`;
+      body.addEventListener("pointerdown", () => markPassed().catch(fail), { once: true });
+    }
+  } catch (error) {
+    fail(error);
+  }
+})();
+</script>

@@ -1,0 +1,153 @@
+fileFormatVersion: 2
+guid: 947d96b2b0bba405aa1e4125323d7400
+timeCreated: 1520380104
+licenseType: Pro
+ModelImporter:
+  serializedVersion: 22
+  fileIDToRecycleName:
+    100000: Camera
+    100002: Chest
+    100004: Chest2
+    100006: Chest3
+    100008: Chest4
+    100010: Head
+    100012: Head_end
+    100014: Hips
+    100016: Lamp
+    100018: LeftAnkle
+    100020: LeftCollar
+    100022: LeftElbow
+    100024: LeftHip
+    100026: LeftKnee
+    100028: LeftShoulder
+    100030: LeftToe
+    100032: LeftToe_end
+    100034: LeftWrist
+    100036: LeftWrist_end
+    100038: //RootNode
+    100040: Neck
+    100042: nocchi
+    100044: RightAnkle
+    100046: RightCollar
+    100048: RightElbow
+    100050: RightHip
+    100052: RightKnee
+    100054: RightShoulder
+    100056: RightToe
+    100058: RightToe_end
+    100060: RightWrist
+    100062: RightWrist_end
+    400000: Camera
+    400002: Chest
+    400004: Chest2
+    400006: Chest3
+    400008: Chest4
+    400010: Head
+    400012: Head_end
+    400014: Hips
+    400016: Lamp
+    400018: LeftAnkle
+    400020: LeftCollar
+    400022: LeftElbow
+    400024: LeftHip
+    400026: LeftKnee
+    400028: LeftShoulder
+    400030: LeftToe
+    400032: LeftToe_end
+    400034: LeftWrist
+    400036: LeftWrist_end
+    400038: //RootNode
+    400040: Neck
+    400042: nocchi
+    400044: RightAnkle
+    400046: RightCollar
+    400048: RightElbow
+    400050: RightHip
+    400052: RightKnee
+    400054: RightShoulder
+    400056: RightToe
+    400058: RightToe_end
+    400060: RightWrist
+    400062: RightWrist_end
+    2000000: Camera
+    7400000: nocchi|nocchi
+    9500000: //RootNode
+    10800000: Lamp
+  externalObjects: {}
+  materials:
+    importMaterials: 1
+    materialName: 0
+    materialSearch: 1
+    materialLocation: 0
+  animations:
+    legacyGenerateAnimations: 4
+    bakeSimulation: 0
+    resampleCurves: 1
+    optimizeGameObjects: 0
+    motionNodeName: 
+    rigImportErrors: 
+    rigImportWarnings: 
+    animationImportErrors: 
+    animationImportWarnings: 
+    animationRetargetingWarnings: 
+    animationDoRetargetingWarnings: 0
+    importAnimatedCustomProperties: 0
+    animationCompression: 1
+    animationRotationError: 0.5
+    animationPositionError: 0.5
+    animationScaleError: 0.5
+    animationWrapMode: 0
+    extraExposedTransformPaths: []
+    extraUserProperties: []
+    clipAnimations: []
+    isReadable: 1
+  meshes:
+    lODScreenPercentages: []
+    globalScale: 1
+    meshCompression: 0
+    addColliders: 0
+    importVisibility: 1
+    importBlendShapes: 1
+    importCameras: 1
+    importLights: 1
+    swapUVChannels: 0
+    generateSecondaryUV: 0
+    useFileUnits: 1
+    optimizeMeshForGPU: 1
+    keepQuads: 0
+    weldVertices: 1
+    secondaryUVAngleDistortion: 8
+    secondaryUVAreaDistortion: 15.000001
+    secondaryUVHardAngle: 88
+    secondaryUVPackMargin: 4
+    useFileScale: 1
+  tangentSpace:
+    normalSmoothAngle: 60
+    normalImportMode: 0
+    tangentImportMode: 3
+    normalCalculationMode: 4
+  importAnimation: 1
+  copyAvatar: 0
+  humanDescription:
+    serializedVersion: 2
+    human: []
+    skeleton: []
+    armTwist: 0.5
+    foreArmTwist: 0.5
+    upperLegTwist: 0.5
+    legTwist: 0.5
+    armStretch: 0.05
+    legStretch: 0.05
+    feetSpacing: 0
+    rootMotionBoneName: 
+    rootMotionBoneRotation: {x: 0, y: 0, z: 0, w: 1}
+    hasTranslationDoF: 0
+    hasExtraRoot: 0
+    skeletonHasParents: 1
+  lastHumanDescriptionAvatarSource: {instanceID: 0}
+  animationType: 2
+  humanoidOversampling: 1
+  additionalBone: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

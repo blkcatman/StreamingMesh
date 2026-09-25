@@ -1,0 +1,60 @@
+// StreamingMesh keyframe encoder.
+
+#pragma kernel EncodeKeyframe
+
+struct TiledVertex
+{
+    uint tileID;
+    uint polyIndex;
+    uint x;
+    uint y;
+    uint z;
+};
+
+uint vertexCount;
+uint packSize;
+uint modelGroup;
+float range;
+float4x4 worldMatrix;
+
+StructuredBuffer<float3> srcBuf;
+RWStructuredBuffer<float3> previousBuf;
+RWStructuredBuffer<TiledVertex> destBuf;
+
+[numthreads(128, 1, 1)]
+void EncodeKeyframe(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x;
+    if (index >= vertexCount)
+        return;
+
+    float3 source = srcBuf[index];
+    previousBuf[index] = source;
+
+    float3 position = mul(worldMatrix, float4(source, 1.0)).xyz;
+    uint halfPack = packSize / 2;
+    float quantizer = halfPack / range;
+
+    TiledVertex output;
+    output.polyIndex = index + modelGroup * 65536;
+
+    if (any(position <= -range) || any(position >= range))
+    {
+        output.tileID = 0x00ffffff;
+        output.x = 0;
+        output.y = 0;
+        output.z = 0;
+    }
+    else
+    {
+        uint3 tile = (uint3)floor(position * quantizer + halfPack);
+        float3 subTile = floor(frac((position + range) * quantizer) * 32.0);
+
+        output.tileID = tile.x | (tile.y << 8) | (tile.z << 16);
+        output.x = (uint)clamp(subTile.x, 0.0, 31.0);
+        output.y = (uint)clamp(subTile.y, 0.0, 31.0);
+        output.z = (uint)clamp(subTile.z, 0.0, 31.0);
+    }
+
+    destBuf[index] = output;
+}

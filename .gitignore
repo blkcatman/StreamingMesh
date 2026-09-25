@@ -1,0 +1,45 @@
+# Unity generated files
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+
+# Build outputs
+/[Bb]uild/
+/[Bb]uilds/
+
+# StreamingMesh runtime/generated data
+/DevData/
+
+# Local work backups
+/_work_backups/
+
+# IDE generated files
+/.idea/
+/.vs/
+*.csproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.opendb
+*.VC.db
+
+# Platform generated files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.gradle/
+
+/UnityPackageManager/
+
+# Python tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/

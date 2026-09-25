@@ -1,0 +1,45 @@
+// StreamingMesh inter-frame delta encoder.
+
+#pragma kernel EncodeDelta
+
+struct FragmentVertex
+{
+    uint x;
+    uint y;
+    uint z;
+};
+
+uint vertexCount;
+float4x4 worldMatrix;
+float4x4 oldMatrix;
+
+StructuredBuffer<float3> srcBuf;
+RWStructuredBuffer<float3> previousBuf;
+RWStructuredBuffer<FragmentVertex> destBuf;
+
+uint EncodeComponent(float delta)
+{
+    float encoded = sign(delta) * sqrt(abs(delta)) * 128.0 + 128.0;
+    return (uint)clamp(floor(encoded), 0.0, 255.0);
+}
+
+[numthreads(128, 1, 1)]
+void EncodeDelta(uint3 id : SV_DispatchThreadID)
+{
+    uint index = id.x;
+    if (index >= vertexCount)
+        return;
+
+    float3 source = srcBuf[index];
+    float3 position = mul(worldMatrix, float4(source, 1.0)).xyz;
+    float3 oldPosition = mul(oldMatrix, float4(previousBuf[index], 1.0)).xyz;
+    float3 delta = position - oldPosition;
+
+    FragmentVertex output;
+    output.x = EncodeComponent(delta.x);
+    output.y = EncodeComponent(delta.y);
+    output.z = EncodeComponent(delta.z);
+    destBuf[index] = output;
+
+    previousBuf[index] = source;
+}

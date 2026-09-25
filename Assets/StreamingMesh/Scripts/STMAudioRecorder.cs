@@ -1,0 +1,364 @@
+using UnityEngine;
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.IO;
+using System.Threading;
+
+namespace StreamingMesh
+{
+  [RequireComponent(typeof(AudioListener))]
+  public sealed class STMAudioRecorder : MonoBehaviour
+  {
+    public const int EncodedSampleRate = 48000;
+    const int EncodedChannels = 2;
+    const int BytesPerSample = 2;
+
+#if UNITY_EDITOR
+    [Header("Fragmented MP4 audio")]
+    [SerializeField] string ffmpegPath = "ffmpeg";
+    [Range(32, 320)] [SerializeField] int bitrateKbps = 128;
+    [Min(0.25f)] [SerializeField] float segmentDuration = 1.024f;
+    [Range(2, 30)] [SerializeField] int maximumQueuedSeconds = 8;
+
+    readonly object queueLock = new object();
+    readonly Queue<byte[]> pcmQueue = new Queue<byte[]>();
+    readonly AutoResetEvent queueSignal = new AutoResetEvent(false);
+    readonly HashSet<string> emittedFragments = new HashSet<string>();
+
+    Process process;
+    Thread writerThread;
+    string outputDirectory;
+    string encoderError;
+    int inputSampleRate;
+    int queuedBytes;
+    long nextStartSample;
+    uint nextSequence;
+    bool initEmitted;
+    bool queueOverflowed;
+    bool overflowReported;
+    volatile bool stopRequested;
+    volatile bool startRecord;
+
+    public delegate void Fmp4InitData(string fileName, byte[] data);
+    public delegate void Fmp4FragmentData(
+      uint sequence,
+      long startSample,
+      int sampleCount,
+      string fileName,
+      byte[] data);
+
+    public Fmp4InitData OnFmp4InitData;
+    public Fmp4FragmentData OnFmp4FragmentData;
+
+    public bool IsStartRecord { get { return startRecord; } }
+    public string OutputDirectory { get { return outputDirectory; } }
+
+    public void Record()
+    {
+      if (startRecord)
+        return;
+      if (writerThread != null && writerThread.IsAlive)
+      {
+        UnityEngine.Debug.LogError("StreamingMesh audio encoder is still stopping.");
+        return;
+      }
+
+      inputSampleRate = AudioSettings.outputSampleRate;
+      outputDirectory = Path.Combine(
+        Application.temporaryCachePath,
+        "StreamingMeshAudio",
+        Guid.NewGuid().ToString("N"));
+      Directory.CreateDirectory(outputDirectory);
+
+      lock (queueLock)
+      {
+        pcmQueue.Clear();
+        queuedBytes = 0;
+      }
+      emittedFragments.Clear();
+      nextStartSample = 0;
+      nextSequence = 0;
+      initEmitted = false;
+      queueOverflowed = false;
+      overflowReported = false;
+      encoderError = null;
+      stopRequested = false;
+
+      try
+      {
+        DisposeProcess();
+        StartEncoderProcess();
+        startRecord = true;
+        writerThread = new Thread(WritePcmLoop)
+        {
+          IsBackground = true,
+          Name = "StreamingMesh fMP4 audio writer"
+        };
+        writerThread.Start();
+      }
+      catch (Exception exception)
+      {
+        startRecord = false;
+        stopRequested = true;
+        DisposeProcess();
+        UnityEngine.Debug.LogError("StreamingMesh could not start FFmpeg: " + exception.Message);
+      }
+    }
+
+    public void Stop()
+    {
+      if (!startRecord && stopRequested)
+        return;
+      startRecord = false;
+      stopRequested = true;
+      queueSignal.Set();
+    }
+
+    void StartEncoderProcess()
+    {
+      string duration = segmentDuration.ToString("0.###", CultureInfo.InvariantCulture);
+      string arguments = string.Format(
+        CultureInfo.InvariantCulture,
+        "-hide_banner -loglevel warning -f s16le -ar {0} -ac {1} -i pipe:0 " +
+        "-vn -c:a aac -b:a {2}k -ar {3} -ac {1} " +
+        "-f hls -hls_time {4} -hls_list_size 0 -hls_segment_type fmp4 " +
+        "-hls_fmp4_init_filename audio-init.mp4 " +
+        "-hls_segment_filename audio-%06d.m4s " +
+        "-hls_flags append_list+omit_endlist+temp_file audio.m3u8",
+        inputSampleRate,
+        EncodedChannels,
+        bitrateKbps,
+        EncodedSampleRate,
+        duration);
+
+      ProcessStartInfo startInfo = new ProcessStartInfo
+      {
+        FileName = ffmpegPath,
+        Arguments = arguments,
+        WorkingDirectory = outputDirectory,
+        UseShellExecute = false,
+        CreateNoWindow = true,
+        RedirectStandardInput = true,
+        RedirectStandardError = true
+      };
+
+      process = new Process { StartInfo = startInfo };
+      process.ErrorDataReceived += (sender, args) =>
+      {
+        if (!string.IsNullOrEmpty(args.Data))
+          encoderError = args.Data;
+      };
+      if (!process.Start())
+        throw new InvalidOperationException("FFmpeg did not start.");
+      process.BeginErrorReadLine();
+    }
+
+    void OnAudioFilterRead(float[] data, int channels)
+    {
+      if (!startRecord || data == null || data.Length == 0 || channels <= 0)
+        return;
+
+      byte[] pcm = ConvertToStereoPcm16(data, channels);
+      int maxQueuedBytes = inputSampleRate * EncodedChannels * BytesPerSample * maximumQueuedSeconds;
+      lock (queueLock)
+      {
+        if (queuedBytes + pcm.Length > maxQueuedBytes)
+        {
+          queueOverflowed = true;
+          return;
+        }
+        pcmQueue.Enqueue(pcm);
+        queuedBytes += pcm.Length;
+      }
+      queueSignal.Set();
+    }
+
+    static byte[] ConvertToStereoPcm16(float[] data, int channels)
+    {
+      int frameCount = data.Length / channels;
+      byte[] output = new byte[frameCount * EncodedChannels * BytesPerSample];
+      for (int frame = 0; frame < frameCount; frame++)
+      {
+        float left = data[frame * channels];
+        float right = channels > 1 ? data[frame * channels + 1] : left;
+        WritePcm16(output, frame * 4, left);
+        WritePcm16(output, frame * 4 + 2, right);
+      }
+      return output;
+    }
+
+    static void WritePcm16(byte[] output, int offset, float value)
+    {
+      double clamped = Math.Max(-1.0, Math.Min(1.0, value));
+      short sample = (short)Math.Round(clamped * 32767.0);
+      output[offset] = (byte)sample;
+      output[offset + 1] = (byte)(sample >> 8);
+    }
+
+    void WritePcmLoop()
+    {
+      try
+      {
+        Stream input = process.StandardInput.BaseStream;
+        while (true)
+        {
+          byte[] pcm = null;
+          lock (queueLock)
+          {
+            if (pcmQueue.Count > 0)
+            {
+              pcm = pcmQueue.Dequeue();
+              queuedBytes -= pcm.Length;
+            }
+          }
+
+          if (pcm != null)
+          {
+            input.Write(pcm, 0, pcm.Length);
+            continue;
+          }
+          if (stopRequested)
+            break;
+          queueSignal.WaitOne(100);
+        }
+        input.Flush();
+        process.StandardInput.Close();
+        process.WaitForExit();
+      }
+      catch (Exception exception)
+      {
+        encoderError = exception.Message;
+      }
+    }
+
+    void Update()
+    {
+      PollEncoderOutput();
+
+      if (queueOverflowed && !overflowReported)
+      {
+        overflowReported = true;
+        UnityEngine.Debug.LogError(
+          "StreamingMesh audio PCM queue overflowed. Recording was stopped to avoid A/V drift.");
+        Stop();
+      }
+
+      if (!string.IsNullOrEmpty(encoderError))
+      {
+        string error = encoderError;
+        encoderError = null;
+        UnityEngine.Debug.LogWarning("FFmpeg audio encoder: " + error);
+      }
+    }
+
+    void PollEncoderOutput()
+    {
+      if (string.IsNullOrEmpty(outputDirectory))
+        return;
+
+      string initPath = Path.Combine(outputDirectory, "audio-init.mp4");
+      if (!initEmitted && File.Exists(initPath))
+      {
+        byte[] initData = TryReadCompletedFile(initPath);
+        if (initData != null)
+        {
+          initEmitted = true;
+          if (OnFmp4InitData != null)
+            OnFmp4InitData("audio-init.mp4", initData);
+        }
+      }
+
+      if (!initEmitted)
+        return;
+      string playlistPath = Path.Combine(outputDirectory, "audio.m3u8");
+      if (!File.Exists(playlistPath))
+        return;
+
+      string[] lines;
+      try
+      {
+        lines = File.ReadAllLines(playlistPath);
+      }
+      catch (IOException)
+      {
+        return;
+      }
+
+      double duration = 0.0;
+      for (int i = 0; i < lines.Length; i++)
+      {
+        string line = lines[i].Trim();
+        if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
+        {
+          string value = line.Substring(8).TrimEnd(',');
+          double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out duration);
+          continue;
+        }
+        if (line.Length == 0 || line[0] == '#')
+          continue;
+
+        string fileName = Path.GetFileName(line);
+        if (emittedFragments.Contains(fileName))
+          continue;
+        string fragmentPath = Path.Combine(outputDirectory, fileName);
+        byte[] fragment = TryReadCompletedFile(fragmentPath);
+        if (fragment == null)
+          continue;
+
+        int sampleCount = Math.Max(1, (int)Math.Round(duration * EncodedSampleRate));
+        emittedFragments.Add(fileName);
+        if (OnFmp4FragmentData != null)
+          OnFmp4FragmentData(nextSequence, nextStartSample, sampleCount, fileName, fragment);
+        nextSequence++;
+        nextStartSample += sampleCount;
+      }
+    }
+
+    static byte[] TryReadCompletedFile(string path)
+    {
+      try
+      {
+        FileInfo info = new FileInfo(path);
+        if (!info.Exists || info.Length == 0)
+          return null;
+        return File.ReadAllBytes(path);
+      }
+      catch (IOException)
+      {
+        return null;
+      }
+    }
+
+    void OnDestroy()
+    {
+      Stop();
+      if (writerThread != null && writerThread.IsAlive)
+        writerThread.Join(500);
+      DisposeProcess();
+      queueSignal.Dispose();
+    }
+
+    void DisposeProcess()
+    {
+      if (process == null)
+        return;
+      try
+      {
+        if (!process.HasExited)
+          process.Kill();
+      }
+      catch
+      {
+      }
+      process.Dispose();
+      process = null;
+    }
+#else
+    public bool IsStartRecord { get { return false; } }
+    public void Record() { }
+    public void Stop() { }
+#endif
+  }
+}
