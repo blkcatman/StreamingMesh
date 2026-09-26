@@ -51,7 +51,8 @@ namespace StreamingMesh {
 				audio_timescale = STMAudioRecorder.EncodedSampleRate,
 				audio_sample_rate = STMAudioRecorder.EncodedSampleRate,
 				audio_channels = 2,
-				audio_init = "audio-init.mp4"
+				audio_init = "audio-init.mp4",
+				audio_playlist = "audio.m3u8"
 			};
 			return channelInfo;
 #else

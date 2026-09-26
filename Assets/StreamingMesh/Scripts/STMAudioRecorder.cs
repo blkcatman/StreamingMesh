@@ -26,6 +26,7 @@ namespace StreamingMesh
     readonly Queue<byte[]> pcmQueue = new Queue<byte[]>();
     readonly AutoResetEvent queueSignal = new AutoResetEvent(false);
     readonly HashSet<string> emittedFragments = new HashSet<string>();
+    string emittedPlaylist;
 
     Process process;
     Thread writerThread;
@@ -48,9 +49,11 @@ namespace StreamingMesh
       int sampleCount,
       string fileName,
       byte[] data);
+    public delegate void Fmp4PlaylistData(string fileName, byte[] data);
 
     public Fmp4InitData OnFmp4InitData;
     public Fmp4FragmentData OnFmp4FragmentData;
+    public Fmp4PlaylistData OnFmp4PlaylistData;
 
     public bool IsStartRecord { get { return startRecord; } }
     public string OutputDirectory { get { return outputDirectory; } }
@@ -78,6 +81,7 @@ namespace StreamingMesh
         queuedBytes = 0;
       }
       emittedFragments.Clear();
+      emittedPlaylist = null;
       nextStartSample = 0;
       nextSequence = 0;
       initEmitted = false;
@@ -313,6 +317,14 @@ namespace StreamingMesh
           OnFmp4FragmentData(nextSequence, nextStartSample, sampleCount, fileName, fragment);
         nextSequence++;
         nextStartSample += sampleCount;
+      }
+
+      string playlist = string.Join("\n", lines) + "\n";
+      if (!string.Equals(playlist, emittedPlaylist, StringComparison.Ordinal))
+      {
+        emittedPlaylist = playlist;
+        if (OnFmp4PlaylistData != null)
+          OnFmp4PlaylistData("audio.m3u8", System.Text.Encoding.UTF8.GetBytes(playlist));
       }
     }
 

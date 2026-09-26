@@ -258,7 +258,7 @@ class Handler(BaseHTTPRequestHandler):
             playlist = root / playlist_name
             if playlist.exists():
                 playlist.unlink()
-        for pattern in ("audio-init.mp4", "audio-*.m4s"):
+        for pattern in ("audio-init.mp4", "audio-*.m4s", "audio.m3u8"):
             for stale_audio in root.glob(pattern):
                 stale_audio.unlink()
         (root / "stream.json").write_bytes(body)
@@ -311,6 +311,8 @@ class Handler(BaseHTTPRequestHandler):
         content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
         if target.suffix == ".wasm":
             content_type = "application/wasm"
+        elif target.suffix == ".m3u8":
+            content_type = "application/vnd.apple.mpegurl"
         elif target.suffix in (".mp4", ".m4s") and target.name.startswith("audio"):
             content_type = "audio/mp4"
         self.send_response(HTTPStatus.OK)

@@ -190,6 +190,7 @@ namespace StreamingMesh
       {
         audioRecorder.OnFmp4InitData = OnGetFmp4InitData;
         audioRecorder.OnFmp4FragmentData = OnGetFmp4FragmentData;
+        audioRecorder.OnFmp4PlaylistData = OnGetFmp4PlaylistData;
       }
 #endif
       InitializeSender();
@@ -463,6 +464,11 @@ namespace StreamingMesh
       AudioInfo audioInfo = serializer.CreateAudioInfo(sequence, fileName, startSample, sampleCount);
       serializer.Send(data, "audio", fileName);
       serializer.Send(audioInfo, sequence);
+    }
+
+    void OnGetFmp4PlaylistData(string fileName, byte[] data)
+    {
+      serializer.Send(data, "audio", fileName);
     }
 #endif
 

@@ -59,6 +59,7 @@ namespace StreamingMesh.Core.Serialization
     public int audio_sample_rate;
     public int audio_channels;
     public string audio_init;
+    public string audio_playlist;
   }
 
   [Serializable]

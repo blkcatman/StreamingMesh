@@ -1,10 +1,11 @@
 using System;
 using System.Runtime.InteropServices;
+using StreamingMesh.Core.Serialization;
 using UnityEngine;
 
 namespace StreamingMesh.Core.Rendering
 {
-  public sealed class WebFmp4AudioPlayer : IDisposable
+  public sealed class WebFmp4AudioPlayer : IStreamingAudioPlayer
   {
     int handle;
 
@@ -27,6 +28,16 @@ namespace StreamingMesh.Core.Rendering
 #else
       return false;
 #endif
+    }
+
+    public bool Initialize(string channelUrl, ChannelInfo channelInfo)
+    {
+      return Initialize(
+        channelUrl,
+        channelInfo.audio_init,
+        channelInfo.audio_info,
+        string.IsNullOrEmpty(channelInfo.audio_mime_type) ? "audio/mp4" : channelInfo.audio_mime_type,
+        string.IsNullOrEmpty(channelInfo.audio_codec) ? "mp4a.40.2" : channelInfo.audio_codec);
     }
 
     public bool TryGetTime(out double time)

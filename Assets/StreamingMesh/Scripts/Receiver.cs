@@ -42,8 +42,8 @@ namespace StreamingMesh
     string m_CurrentStreamPlaylistData = "";
 
     StreamingAudioRenderer m_AudioRenderer = null;
-    WebFmp4AudioPlayer m_WebAudioPlayer = null;
-    bool m_UseWebFmp4Audio = false;
+    IStreamingAudioPlayer m_Fmp4AudioPlayer = null;
+    bool m_UseFmp4Audio = false;
     string m_AudioPlayListName = ""; //"stream.stma"
     string m_CurrentAudioPlayListData = "";
 
@@ -122,10 +122,10 @@ namespace StreamingMesh
         m_MeshRenderer.Dispose();
         m_MeshRenderer = null;
       }
-      if (m_WebAudioPlayer != null)
+      if (m_Fmp4AudioPlayer != null)
       {
-        m_WebAudioPlayer.Dispose();
-        m_WebAudioPlayer = null;
+        m_Fmp4AudioPlayer.Dispose();
+        m_Fmp4AudioPlayer = null;
       }
     }
 
@@ -134,13 +134,13 @@ namespace StreamingMesh
       //If initial data is not loaded, skip update
       if(m_MeshRenderer == null) return;
 
-#if UNITY_WEBGL
       double audioTime;
-      if (m_UseWebFmp4Audio && m_WebAudioPlayer != null && m_WebAudioPlayer.TryGetTime(out audioTime))
+      if (m_UseFmp4Audio && m_Fmp4AudioPlayer != null && m_Fmp4AudioPlayer.TryGetTime(out audioTime))
       {
         m_CurrentTime = audioTime;
         m_PlaybackClockStarted = true;
       }
+#if UNITY_WEBGL
       else if (!m_PlaybackClockStarted)
       {
         double startTime;
@@ -151,11 +151,14 @@ namespace StreamingMesh
         }
       }
 #else
-      m_CurrentTime = (double)m_AudioOffset / (double)(m_AudioSampleRate * 2);
+      else if (!m_UseFmp4Audio)
+      {
+        m_CurrentTime = (double)m_AudioOffset / (double)(m_AudioSampleRate * 2);
+      }
 #endif
       m_MeshRenderer.UpdateWithTime(m_CurrentTime);
 #if UNITY_WEBGL
-      if (!m_UseWebFmp4Audio && m_PlaybackClockStarted &&
+      if (!m_UseFmp4Audio && m_PlaybackClockStarted &&
           m_MeshRenderer.PlaybackState == StreamingPlaybackState.Playing)
         m_CurrentTime += Time.deltaTime;
 #endif
@@ -203,20 +206,14 @@ namespace StreamingMesh
         m_AudioPlayListName = channelInfo.audio_info;
         m_PollingInterval = channelInfo.frame_interval * channelInfo.combined_frames;
 
-#if UNITY_WEBGL
         if (string.Equals(channelInfo.audio_format, "fmp4", StringComparison.OrdinalIgnoreCase) &&
             !string.IsNullOrEmpty(channelInfo.audio_init) &&
             !string.IsNullOrEmpty(channelInfo.audio_info))
         {
-          m_WebAudioPlayer = new WebFmp4AudioPlayer();
-          m_UseWebFmp4Audio = m_WebAudioPlayer.Initialize(
-            m_ChannelAddress,
-            channelInfo.audio_init,
-            channelInfo.audio_info,
-            string.IsNullOrEmpty(channelInfo.audio_mime_type) ? "audio/mp4" : channelInfo.audio_mime_type,
-            string.IsNullOrEmpty(channelInfo.audio_codec) ? "mp4a.40.2" : channelInfo.audio_codec);
+          m_Fmp4AudioPlayer = StreamingAudioPlayerFactory.Create();
+          m_UseFmp4Audio = m_Fmp4AudioPlayer != null &&
+            m_Fmp4AudioPlayer.Initialize(m_ChannelAddress, channelInfo);
         }
-#endif
 
         //Get CombinedData
         byte[] combinedData = null;
@@ -354,7 +351,7 @@ namespace StreamingMesh
         yield return new WaitUntil(wrapper.RequestFinished);
       }
 
-      if(!string.IsNullOrEmpty(m_AudioPlayListName) && !m_UseWebFmp4Audio)
+      if(!string.IsNullOrEmpty(m_AudioPlayListName) && !m_UseFmp4Audio)
       {
         HttpWrapper wrapper = new HttpWrapper();
         wrapper.RequestPlaylistDiff<AudioInfo>(GetAbsoluteURL(m_AudioPlayListName), m_CurrentAudioPlayListData, (list, newData) => {
