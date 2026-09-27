@@ -32,7 +32,7 @@ Timeline は約287.6秒。音声開始位置は原版と同じ6.6秒です。身
 
 ## ライセンス文書
 
-このディレクトリへ取り込んだキャラクター等の原版同梱条件は `License/UCL2.0/` を参照してください。両シーンに `© Unity Technologies Japan/UCL` を表示します。アセットの再配布時にはライセンス文書も一緒に扱ってください。このUCL文書は `Assets/StreamingMesh/` の実装に対するライセンスではありません。
+このディレクトリへ取り込んだキャラクター等の原版同梱条件は `License/UCL2.0/` を参照してください。両シーンに `© Unity Technologies Japan/UCL` を表示します。アセットの再配布時にはライセンス文書も一緒に扱ってください。このUCL文書は `Assets/StreamingMesh/` の実装に対するライセンスではありません。StreamingMesh本体と本プロジェクトで作成した連携コードは、ルートの `LICENSE`（MIT）を参照してください。
 
 SpringBone と Toon Shader はキャラクターのライセンスとは別です。それぞれのパッケージ内の LICENSE / LICENSE.md を参照してください。Toon Shader の参照先は [Unity Companion License](https://unity.com/legal/licenses/unity-companion-license) です。
 

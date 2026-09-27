@@ -6,12 +6,12 @@ Unityのメッシュ・音声ストリーミング実装と、UnityChan KAGURA�
 
 | 場所 | 内容 | ライセンス文書 |
 | --- | --- | --- |
-| `Assets/StreamingMesh/`、`Assets/Plugins/`、`Tools/` | StreamingMesh本体と開発ツール | このリポジトリには本体を包括的に許諾するLICENSEファイルはありません。UnityChanのUCLはこれらに適用されません。 |
+| `Assets/StreamingMesh/`、`Assets/Plugins/`、`Tools/`、`Docs/` | StreamingMesh本体、開発ツール、ドキュメント | ルートの `LICENSE`（MIT）。UnityChanのUCLはこれらに適用されません。 |
 | `Assets/Samples/UnityChanKAGURA/` | 取り込んだキャラクター、モーション、楽曲、デモシーン | 同ディレクトリの `License/UCL2.0/` と `README.md` を参照。楽曲の追加条件は未確認です。 |
 | `Packages/com.unity.springbone/` | KAGURAサンプルが使うSpringBone | 同パッケージの `LICENSE` / `LICENSE.md`（MIT）を参照。 |
 | `Packages/com.unity.universaltoonshader.urp/` | KAGURAサンプルが使うToon Shader | 同パッケージの `LICENSE.md`（Unity Companion License）を参照。 |
 
-各ディレクトリのライセンスは、別のディレクトリのコードや素材へ自動的に拡張されません。サンプル素材を含む成果物を公開・再配布する前に、楽曲を含めて適用条件を確認してください。
+ルートのMITライセンスはStreamingMesh本体と本プロジェクトで作成したコード・ドキュメントに適用します。`Assets/Samples/UnityChanKAGURA/` に取り込んだ原版素材と `Packages/` の同梱パッケージには適用されません。各ディレクトリのライセンスは、別のディレクトリのコードや素材へ自動的に拡張されません。サンプル素材を含む成果物を公開・再配布する前に、楽曲を含めて適用条件を確認してください。
 
 ## 動作確認
 
