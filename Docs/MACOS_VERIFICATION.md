@@ -1,5 +1,7 @@
 # macOS動作確認
 
+この文書は旧SDユニティちゃんサンプルを使った2026-09-25時点の検証記録です。記載の `Assets/_Files/` と `Assets/TestScene.unity` は現在のプロジェクトから削除済みです。現行デモとビルド手順は `Assets/Samples/UnityChanKAGURA/README.md` を参照してください。
+
 確認日: 2026-09-25
 
 ## 判定

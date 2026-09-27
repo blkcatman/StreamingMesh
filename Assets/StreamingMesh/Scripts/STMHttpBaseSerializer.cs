@@ -249,35 +249,36 @@ namespace StreamingMesh {
 			waitResponse = false;
 		}
 
-		IEnumerator Main_Send(string query, byte[] data, bool isBinary, bool usePushToken, bool isJson = false) {
-			string requestToken = GetRequestToken(usePushToken);
-			if(usePushToken && String.IsNullOrEmpty(requestToken)) {
-				Debug.LogError("Channel push token is unavailable; create the channel first.");
-				yield break;
-			}
-			string addr = address + channel + "/?" + query;
-			Debug.Log("SEND: " + addr);
-			waitResponse = true;
+        IEnumerator Main_Send(string query, byte[] data, bool isBinary, bool usePushToken, bool isJson = false) {
+            string token = GetRequestToken(usePushToken);
+            if (usePushToken && String.IsNullOrEmpty(token)) {
+                Debug.LogError("Channel push token is unavailable; create the channel first.");
+                yield break;
+            }
+            waitResponse = true;
+            try {
+                for (int attempt = 0; attempt < 3; attempt++) {
+                    using (var request = new UnityWebRequest(address + channel + "/?" + query, "POST")) {
+                        request.downloadHandler = new DownloadHandlerBuffer();
+                        request.uploadHandler = new UploadHandlerRaw(data);
+                        request.timeout = 30;
+                        request.SetRequestHeader("Content-Type", isJson ? "application/json" : isBinary ? "application/octet-stream" : "text/plain");
+                        if (!String.IsNullOrEmpty(token)) request.SetRequestHeader("Authorization", "Bearer " + token);
+                        yield return request.SendWebRequest();
+                        if (request.result == UnityWebRequest.Result.Success && request.responseCode == 200) {
+                            if (!usePushToken && query.StartsWith("channel=", StringComparison.Ordinal))
+                                ReadChannelPushToken(request.downloadHandler.text);
+                            yield break;
+                        }
+                        if (attempt == 2) Debug.LogError("StreamingMesh upload failed: " + query + ": " + request.error);
+                    }
+                    yield return new WaitForSecondsRealtime(0.25f * (attempt + 1));
+                }
+                GetComponent<STMHttpSender>()?.Stop();
+                executeOnUpdate.Clear();
+            } finally { waitResponse = false; }
+        }
 
-			UnityWebRequest request = new UnityWebRequest(addr, "POST");
-			request.downloadHandler = (DownloadHandler) new DownloadHandlerBuffer();
-			request.uploadHandler = (UploadHandler) new UploadHandlerRaw(data);
-			request.SetRequestHeader("Content-Type",  (isBinary ? "application/octet-stream" : "text/plain"));
-			if (!String.IsNullOrEmpty(requestToken)) {
-				request.SetRequestHeader("Authorization", "Bearer " + requestToken);
-			}
-			yield return request.Send();
-
-			if (request.isNetworkError) {
-				Debug.Log(request.error);
-			}
-
-			if (!usePushToken && query.StartsWith("channel=", StringComparison.Ordinal) && request.responseCode == 200) {
-				ReadChannelPushToken(request.downloadHandler.text);
-			}
-
-			waitResponse = false;
-		}
 #endif
 		protected virtual void ProcessRequestedData(KeyValuePair<string, byte[]> pair) {
 		}

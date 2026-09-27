@@ -73,26 +73,33 @@ namespace StreamingMesh.Net
 #if STM_DEBUG_NET
         Debug.Log("STM_DEBUG_NET HttpManager::_Request() url:" + url);
 #endif
-        yield return request.SendWebRequest();
-
-        if(callbackData != null)
+        try
         {
-          if(request.responseCode == 200) {
-            callbackData(request.downloadHandler.data);
-          } else {
-            callbackData(null);
-          }
-        }
-        if (callbackAudio != null)
-        {
-          if(request.responseCode == 200) {
-            callbackAudio(((DownloadHandlerAudioClip)request.downloadHandler).audioClip);
-          } else {
-            callbackAudio(null);
-          }
-        }
+          yield return request.SendWebRequest();
 
-        callback();
+          if(callbackData != null)
+          {
+            if(request.result == UnityWebRequest.Result.Success && request.responseCode == 200) {
+              callbackData(request.downloadHandler.data);
+            } else {
+              callbackData(null);
+            }
+          }
+          if (callbackAudio != null)
+          {
+            if(request.result == UnityWebRequest.Result.Success && request.responseCode == 200) {
+              callbackAudio(((DownloadHandlerAudioClip)request.downloadHandler).audioClip);
+            } else {
+              callbackAudio(null);
+            }
+          }
+
+        }
+        finally
+        {
+          request?.Dispose();
+          callback();
+        }
     }
 
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using System.Runtime.InteropServices;
 using System.Text;
 using UnityEngine;
@@ -151,8 +152,8 @@ namespace StreamingMesh
     Matrix4x4[] oldMatrices;
     readonly List<int> linedIndices = new List<int>();
 
-    readonly List<int> byteSizes = new List<int>();
-    readonly List<byte> combinedBinary = new List<byte>();
+    List<int> byteSizes = new List<int>();
+    List<byte> combinedBinary = new List<byte>();
     readonly Dictionary<uint, PendingEncodeFrame> pendingFrames = new Dictionary<uint, PendingEncodeFrame>();
 
     int tilingKernel = -1;
@@ -167,6 +168,19 @@ namespace StreamingMesh
     long lastCommittedTicks;
     uint nextCommitSequence;
     uint combinedFirstSequence;
+    sealed class PendingChunk
+    {
+      public long index;
+      public StreamInfo info;
+      public string fileName;
+      public Task<byte[]> compression;
+      public List<int> sizes;
+      public List<byte> payload;
+    }
+    readonly Queue<PendingChunk> pendingChunks = new Queue<PendingChunk>();
+    readonly Stack<List<int>> spareSizeLists = new Stack<List<int>>();
+    readonly Stack<List<byte>> sparePayloadLists = new Stack<List<byte>>();
+
     uint combinedLastSequence;
     long combinedChunkIndex;
     double recordStartRealtime;
@@ -258,6 +272,7 @@ namespace StreamingMesh
         combinedFirstSequence = 0;
         combinedLastSequence = 0;
         pendingFrames.Clear();
+        pendingChunks.Clear();
         byteSizes.Clear();
         combinedBinary.Clear();
         linedIndices.Clear();
@@ -268,7 +283,7 @@ namespace StreamingMesh
         // in the same main-thread turn. This keeps their startup offset bounded to
         // the next audio DSP buffer instead of allowing audio to lead the mesh.
         if (audioRecorder != null)
-          audioRecorder.Record();
+          audioRecorder.Record(combinedFrames * FrameInterval);
 #endif
       }
     }
@@ -474,6 +489,7 @@ namespace StreamingMesh
 
     void LateUpdate()
     {
+      PublishCompletedChunks();
       TryCommitPendingFrames();
 
       if (!Application.isPlaying || !startRecord || !computeReady)
@@ -485,7 +501,7 @@ namespace StreamingMesh
 
       // Holding the capture clock here is intentional. In production mode we
       // prefer latency over silently dropping a keyframe dependency chain.
-      if (pendingFrames.Count >= maxPendingReadbacks)
+      if (pendingFrames.Count >= maxPendingReadbacks || pendingChunks.Count >= 2)
         return;
 
       currentTime -= FrameInterval;
@@ -850,19 +866,49 @@ namespace StreamingMesh
         return;
       }
 
-      serializer.Send(streamInfo, tick);
       string fileName = tick.ToString("000000") + ".stmv";
-      int headerIntegerCount = byteSizes.Count + 1;
-      byte[] buffer = new byte[headerIntegerCount * sizeof(int) + combinedBinary.Count];
-      int[] sizes = new int[headerIntegerCount];
-      sizes[0] = byteSizes.Count;
-      byteSizes.CopyTo(sizes, 1);
-      Buffer.BlockCopy(sizes, 0, buffer, 0, sizes.Length * sizeof(int));
-      Buffer.BlockCopy(combinedBinary.ToArray(), 0, buffer, sizes.Length * sizeof(int), combinedBinary.Count);
-      serializer.Send(Lib.ExternalTools.Compress(buffer), "stream", fileName);
+      // Transfer ownership of the completed lists. Packing the size table,
+      // copying the large payload and gzip compression all run on the worker.
+      var sizes = byteSizes;
+      var payload = combinedBinary;
+      byteSizes = spareSizeLists.Count > 0 ? spareSizeLists.Pop() : new List<int>();
+      combinedBinary = sparePayloadLists.Count > 0 ? sparePayloadLists.Pop() : new List<byte>();
+      pendingChunks.Enqueue(new PendingChunk {
+        index = tick, info = streamInfo, fileName = fileName, sizes = sizes, payload = payload,
+        compression = Task.Run(() => {
+          int headerBytes = (sizes.Count + 1) * sizeof(int);
+          byte[] buffer = new byte[headerBytes + payload.Count];
+          int[] header = new int[sizes.Count + 1];
+          header[0] = sizes.Count;
+          sizes.CopyTo(header, 1);
+          Buffer.BlockCopy(header, 0, buffer, 0, headerBytes);
+          payload.CopyTo(buffer, headerBytes);
+          return Lib.ExternalTools.Compress(buffer);
+        })
+      });
+    }
 
-      byteSizes.Clear();
-      combinedBinary.Clear();
+    void PublishCompletedChunks()
+    {
+      while (pendingChunks.Count > 0 && pendingChunks.Peek().compression.IsCompleted)
+      {
+        var chunk = pendingChunks.Dequeue();
+        chunk.sizes.Clear();
+        chunk.payload.Clear();
+        spareSizeLists.Push(chunk.sizes);
+        sparePayloadLists.Push(chunk.payload);
+        if (chunk.compression.IsFaulted || chunk.compression.IsCanceled)
+        {
+          Debug.LogError("StreamingMesh chunk compression failed; recording stopped.");
+          Stop();
+          pendingChunks.Clear();
+          return;
+        }
+        // Result is accessed only after completion. The serializer acknowledges
+        // the payload upload before processing the following playlist update.
+        serializer.Send(chunk.compression.Result, "stream", chunk.fileName);
+        serializer.Send(chunk.info, chunk.index);
+      }
     }
 
     static byte[] AddHeader(

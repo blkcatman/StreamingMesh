@@ -6,5 +6,5 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
-    path: Assets/TestScene.unity
-    guid: 37a40ef3ef7074459a39c0200a38b403
+    path: Assets/Samples/UnityChanKAGURA/Scenes/KaguraReceiver.unity
+    guid: c73171fb0e985425d882d73f690ebcb6

@@ -82,6 +82,14 @@ namespace StreamingMesh.Core.Rendering
       handle = 0;
     }
 
+    public void SetPlaying(bool playing)
+    {
+#if UNITY_WEBGL && !UNITY_EDITOR
+      if (handle > 0)
+        STM_Fmp4_SetPlaying(handle, playing ? 1 : 0);
+#endif
+    }
+
 #if UNITY_WEBGL && !UNITY_EDITOR
     [DllImport("__Internal")]
     static extern int STM_Fmp4_Create(
@@ -98,6 +106,9 @@ namespace StreamingMesh.Core.Rendering
 
     [DllImport("__Internal")]
     static extern void STM_Fmp4_Seek(int playerHandle, double time);
+
+    [DllImport("__Internal")]
+    static extern void STM_Fmp4_SetPlaying(int playerHandle, int playing);
 
     [DllImport("__Internal")]
     static extern void STM_Fmp4_Destroy(int playerHandle);

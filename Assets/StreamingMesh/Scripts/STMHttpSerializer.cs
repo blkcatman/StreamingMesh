@@ -62,32 +62,47 @@ namespace StreamingMesh {
 
 		public MeshInfo CreateMeshInfo(SkinnedMeshRenderer renderer) {
 #if UNITY_EDITOR
-			Mesh mesh = renderer.sharedMesh;
-			if (mesh == null) {
-				return null;
+			Mesh source = renderer.sharedMesh;
+			if (source == null) return null;
+			Mesh snapshot = null;
+			try {
+				// Imported meshes can release their CPU data in Play mode. BakeMesh
+				// supplies readable topology and UVs without changing import settings.
+				Mesh mesh = source;
+				if (!source.isReadable) {
+					snapshot = new Mesh();
+					renderer.BakeMesh(snapshot);
+					mesh = snapshot;
+				}
+				MeshInfo meshInfo = new MeshInfo() {
+					name = source.name,
+					vertexCount = mesh.vertexCount,
+					subMeshCount = mesh.subMeshCount,
+					uv = mesh.uv,
+					uv2 = mesh.uv2,
+					uv3 = mesh.uv3,
+					uv4 = mesh.uv4,
+					materialNames = (from m in renderer.sharedMaterials select m.name).ToList(),
+					indicesCounts = new List<int>(),
+					indices = new List<int>()
+				};
+				for (int i = 0; i < mesh.subMeshCount; i++) {
+					if (mesh.GetTopology(i) != MeshTopology.Triangles)
+						throw new InvalidOperationException("StreamingMesh requires triangle topology: " + source.name);
+					int[] indices = mesh.GetIndices(i);
+					meshInfo.indicesCounts.Add(indices.Length);
+					meshInfo.indices.AddRange(indices);
+				}
+				if (meshInfo.vertexCount != source.vertexCount || meshInfo.indices.Count == 0)
+					throw new InvalidOperationException("StreamingMesh could not read mesh topology: " + source.name);
+				return meshInfo;
 			}
-			MeshInfo meshInfo = new MeshInfo() {
-				name = mesh.name,
-				vertexCount = mesh.vertexCount,
-				subMeshCount = mesh.subMeshCount,
-				uv = mesh.uv,
-				uv2 = mesh.uv2,
-				uv3 = mesh.uv3,
-				uv4 = mesh.uv4
-			};
-			meshInfo.materialNames = 
-				(from m in renderer.sharedMaterials select m.name).ToList();
-
-			meshInfo.indicesCounts = new List<int>();
-			meshInfo.indices = new List<int>();
-
-			for(int i = 0; i < mesh.subMeshCount; i++) {
-				int[] indices = mesh.GetIndices(i);
-				meshInfo.indicesCounts.Add(indices.Length);
-				meshInfo.indices.AddRange(indices);
+			finally {
+				if (snapshot != null) {
+					if (Application.isPlaying) UnityEngine.Object.Destroy(snapshot);
+					else UnityEngine.Object.DestroyImmediate(snapshot);
+				}
 			}
-
-			return meshInfo;
 #else
 			return null;
 #endif
@@ -170,44 +185,43 @@ namespace StreamingMesh {
 #endif
 		}
 
-		public static byte[] GetTextureToPNGByteArray(Texture texture, bool isReimportTexture) {
+        // Kept for source compatibility; exporting never changes TextureImporter settings.
+        public static byte[] GetTextureToPNGByteArray(Texture texture, bool isReimportTexture) {
 #if UNITY_EDITOR
-			if(texture == null) {
-				return null;
-			}
+            if (texture == null) return null;
+            if (texture.dimension != UnityEngine.Rendering.TextureDimension.Tex2D)
+                throw new ArgumentException("StreamingMesh PNG export requires a 2D texture.");
 
-			bool oldReadable = false;
-			TextureImporterCompression oldCompression = TextureImporterCompression.Uncompressed;
-			if(isReimportTexture) {
-				//Change texture readable flag from Texture Importer
-				string pass = AssetDatabase.GetAssetPath(texture);
-				TextureImporter ti = TextureImporter.GetAtPath(pass) as TextureImporter;
-				oldReadable = ti.isReadable;
-				oldCompression = ti.textureCompression;
-				ti.isReadable = true;
-				ti.textureCompression = TextureImporterCompression.Uncompressed;
-				AssetDatabase.ImportAsset(pass);
-			}
-
-			//Convert the texture to raw PNG data
-			Texture2D tex = texture as Texture2D;
-			//Debug.Log(texture.name);
-			byte[] data = tex.EncodeToPNG();
-
-			if(isReimportTexture) {
-				//Revert texture readable flag
-				string pass = AssetDatabase.GetAssetPath(texture);
-				TextureImporter ti = TextureImporter.GetAtPath(pass) as TextureImporter;
-				ti.isReadable = oldReadable;
-				ti.textureCompression = oldCompression;
-				AssetDatabase.ImportAsset(pass);
-			}
-
-			return data;
+            RenderTexture previous = RenderTexture.active;
+            bool previousSrgbWrite = GL.sRGBWrite;
+            RenderTexture temporary = null;
+            Texture2D readable = null;
+            try {
+                // Match the source transfer function so an sRGB color texture is
+                // encoded as sRGB bytes, and a linear data texture stays linear.
+                bool srgb = UnityEngine.Experimental.Rendering.GraphicsFormatUtility.IsSRGBFormat(texture.graphicsFormat);
+                temporary = RenderTexture.GetTemporary(texture.width, texture.height, 0,
+                    RenderTextureFormat.ARGB32, srgb ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Linear);
+                GL.sRGBWrite = srgb && QualitySettings.activeColorSpace == ColorSpace.Linear;
+                Graphics.Blit(texture, temporary);
+                RenderTexture.active = temporary;
+                readable = new Texture2D(texture.width, texture.height, TextureFormat.RGBA32, false, !srgb);
+                readable.ReadPixels(new Rect(0, 0, texture.width, texture.height), 0, 0, false);
+                readable.Apply(false, false);
+                return readable.EncodeToPNG();
+            } finally {
+                RenderTexture.active = previous;
+                GL.sRGBWrite = previousSrgbWrite;
+                if (temporary != null) RenderTexture.ReleaseTemporary(temporary);
+                if (readable != null) {
+                    if (Application.isPlaying) UnityEngine.Object.Destroy(readable);
+                    else UnityEngine.Object.DestroyImmediate(readable);
+                }
+            }
 #else
-			return null;
+            return null;
 #endif
-		}
+        }
 
 		public StreamInfo CreateStreamInfo(
 			long tickCnt,

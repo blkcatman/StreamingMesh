@@ -1,5 +1,7 @@
 # iOS実機動作確認
 
+この文書は旧SDユニティちゃんデータを使った2026-09-26時点の検証記録です。現行のKAGURAサンプルの手順と結果は `Assets/Samples/UnityChanKAGURA/README.md` と `Docs/RECEIVER_GPU_PIPELINE.md` を参照してください。
+
 確認日: 2026-09-26
 
 ## 判定

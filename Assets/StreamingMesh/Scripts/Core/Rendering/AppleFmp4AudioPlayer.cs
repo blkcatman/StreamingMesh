@@ -63,6 +63,14 @@ namespace StreamingMesh.Core.Rendering
 #endif
     }
 
+    public void SetPlaying(bool playing)
+    {
+#if UNITY_IOS || UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
+      if (handle > 0)
+        STM_AppleAudio_SetPlaying(handle, playing ? 1 : 0);
+#endif
+    }
+
     public void Dispose()
     {
 #if UNITY_IOS || UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
@@ -110,6 +118,9 @@ namespace StreamingMesh.Core.Rendering
 
     [DllImport(PluginName)]
     static extern void STM_AppleAudio_Seek(int playerHandle, double time);
+
+    [DllImport(PluginName)]
+    static extern void STM_AppleAudio_SetPlaying(int playerHandle, int playing);
 
     [DllImport(PluginName)]
     static extern void STM_AppleAudio_Destroy(int playerHandle);

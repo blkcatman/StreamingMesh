@@ -377,16 +377,11 @@ position += delta
 
 ### 5.4 ComputeShaderとCPUフォールバック
 
-通常はCPUで作ったコマンド列を `VertexDecodeShader.compute` へ渡し、連続した `RWStructuredBuffer<float4>` を更新する。その後 `AsyncGPUReadback.Request` で頂点スナップショットを取得し、Mesh別の `float[][]` へ分割する。
+ReceiverのGPU常駐経路では、元のパック済みバイトとタイル索引を `ReceiverVertexPipeline.compute` へ渡す。GPU上で復元状態と再生待ちスナップショットを保持し、音声PTSで補間してMeshのGPU頂点バッファへ直接出力する。macOS/iOSでは頂点readbackを行わずGraphicsFenceで処理完了を確認する。WebGPUでは完了確認に各フレームの先頭16バイトだけを非同期readbackする。
 
-次の場合は同じ演算をCPUで実行する。
+Auto/GPUはComputeShaderと完了確認機能（macOS/iOSのGraphicsFence、WebGPUのAsyncGPUReadback）に対応する場合にGPU経路を試行する。CPU指定、非対応環境、初期化失敗ではCPU経路を使用する。GPU実行中の例外では次のキーフレームからCPUで再開し、GPU側だけに存在する差分復元状態は引き継がない。モバイルも同じ選択規則とする。旧VertexContainer単体APIには従来のreadback経路が残る。
 
-- ComputeShader非対応
-- デコードShaderをロードできない
-- `AsyncGPUReadback` 非対応
-- GPUデコード中に例外が起き、Compute経路を無効化した
-
-GPU経路とCPU経路は同じ量子化復元式を使用する。
+GPU経路とCPU経路は同じ量子化復元式を使用する。法線・メモリ上限・検証については [RECEIVER_GPU_PIPELINE.md](RECEIVER_GPU_PIPELINE.md) を参照。
 
 ### 5.5 keyframe待機とsequence欠落
 
@@ -401,7 +396,11 @@ Receiverは次の状態を持つ。
 
 期待する `nextSequence` がなく、それより後のキーフレームが到着している場合は、欠落した差分チェーンを適用せず、そのキーフレームから再開する。後続キーフレームもなければ最後の正常なMeshを表示したまま待機する。
 
-標準では2つのデコード済みフレームを事前バッファし、前後のPTS間で頂点とroot位置を線形補間する。再生時計は `Playing` の間だけ進め、`Buffering` 中は進めない。
+標準では2つ以上のデコード済みフレームを使い、前後のPTS間で頂点とroot位置を線形補間する。fMP4音声経路では、音声プレーヤーを停止状態で準備し、モデルと最初のメッシュフレームが揃ってから先頭メッシュのPTSへ音声をシークする。シーク完了後、その時刻から最低0.25秒（または2フレーム分）のメッシュが揃うと再生を開始する。途中接続も受信した先頭から開始し、ライブの最新時刻へ自動ジャンプしない。
+
+再生中は音声時刻を基準に表示する。デコード済みメッシュの残りが0.05秒未満になると音声を一時停止し、取得・デコードを続けて上記の再開条件を満たすまで待つ。音声側のバッファ不足では音声時計が止まるため、メッシュもその時刻に留まる。制御はUnityのUpdate周期で行うため、サンプル精度での同期を保証するものではない。音声のないWebGL経路は従来どおり `Playing` の間だけ内部時計を進める。
+
+バッファの充足は設定fpsから求めた枚数だけではなく、実際のPTSの時刻幅で判定する。容量上限に達しても必要な時刻幅に届かない場合は、補間の起点と新しい表示用スナップショットを残して中間のスナップショットを間引き、デコードを続ける。差分フレーム自体のデコード順序は維持する。
 
 ## 6. 精度と制限
 
@@ -443,3 +442,13 @@ keyframeStep = containerSize / (floor(packageSize / 2) * 32)
 | ペイロード検証・デコードコマンド生成 | `Core/VertexContainer.cs` |
 | キーフレーム／差分フレームのGPUデコード | `Resources/VertexDecodeShader.compute` |
 | テクスチャ／マテリアル／Mesh復元 | `TextureConverter` / `MaterialConverter` / `MeshConverter` |
+
+## メインスレッドの待機とファイル公開
+
+通常録画中のFFmpeg stdin書き込みとWaitForExitは専用writerThreadで実行する。FFmpegの標準エラーも非同期で排出する。終了処理OnDestroyには最大500msのJoinが残るが、通常再生中には呼ばない。
+
+音声playlist・新しいfragmentの読み出しは0.1秒間隔でTask.Runへ投入し、完了済み結果だけをUpdateでイベント通知する。最初のplaylistが公開されるまでinitファイルを送らず、未読fragmentを含むplaylistも送らない。メッシュの結合リストは所有権をworkerへ渡してサイズ表作成・大容量コピー・GZip圧縮を行い、圧縮完了後に元の順序で送信する。Task.ResultはIsCompleted確認後だけ参照し、UpdateでTask.WaitやJoinは行わない。結合バッファは処理後に再利用する。
+
+Senderのアップロードは本体→配信リストの順にHTTP応答を待つコルーチンで実行する。通信待ちはメインスレッドをブロックしない。受信側のチャンク展開もworkerへ移動する。GPU dispatch、Meshへの描画反映、送信元BakeMesh、PCMコールバック処理自体は別に負荷が残るため、非同期化だけでフレーム時間を保証するものではない。
+
+Create ChannelのPNG生成は元TextureImporterを変更せず、GPU上の一時RenderTextureから読み出す。インポートや元テクスチャの圧縮設定変更は行わない。この初期化時のGPU読み出しとPNGエンコードは同期処理だが、通常録画中の毎フレーム処理ではない。

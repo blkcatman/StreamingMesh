@@ -12,10 +12,15 @@ public class TextureConverter
       Texture2D texture = new Texture2D(2, 2);
       try
       {
-        texture.LoadImage(buffer);
+        if (!texture.LoadImage(buffer, true))
+        {
+          UnityEngine.Object.Destroy(texture);
+          return null;
+        }
       }
       catch(Exception e)
       {
+        UnityEngine.Object.Destroy(texture);
         Debug.LogError("Broken Texture Received in TextureConverter::Deserialize");
         return null;
       }

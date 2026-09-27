@@ -1,0 +1,111 @@
+#pragma kernel RestoreKeyframe
+#pragma kernel RestoreDelta
+#pragma kernel Snapshot
+#pragma kernel Present
+#pragma kernel FaceNormals
+#pragma kernel VertexNormals
+
+ByteAddressBuffer inputBytes;
+StructuredBuffer<uint4> tiles;
+StructuredBuffer<uint> meshOffsets;
+RWStructuredBuffer<uint> packedIndices;
+RWStructuredBuffer<float4> stateVertices;
+RWStructuredBuffer<float4> snapshotVertices;
+StructuredBuffer<float4> previousVertices;
+StructuredBuffer<float4> nextVertices;
+RWByteAddressBuffer meshVertices;
+StructuredBuffer<int> triangleIndices;
+RWStructuredBuffer<float4> faceNormals;
+StructuredBuffer<int> adjacencyOffsets;
+StructuredBuffer<int> adjacencyFaces;
+uint vertexCount, tileCount, headerSize, meshOffset, meshStride, normalOffset, faceCount;
+float tileScale, subTileScale, interpolation;
+int halfPackage;
+
+uint ReadByte(uint offset)
+{
+    return (inputBytes.Load(offset & ~3u) >> ((offset & 3u) * 8u)) & 255u;
+}
+
+[numthreads(128,1,1)]
+void RestoreKeyframe(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= vertexCount) return;
+    uint lo = 0, hi = tileCount;
+    while (lo + 1 < hi)
+    {
+        uint mid = (lo + hi) / 2;
+        if (tiles[mid].x <= i) lo = mid; else hi = mid;
+    }
+    uint4 tile = tiles[lo];
+    uint p = tile.z + (i - tile.x) * 5;
+    uint globalIndex = meshOffsets[ReadByte(p + 2)] + ReadByte(p) + (ReadByte(p + 1) << 8);
+    uint packed = ReadByte(p + 3) + (ReadByte(p + 4) << 8);
+    float3 origin = float3((int)ReadByte(tile.w) - halfPackage,
+        (int)ReadByte(tile.w + 1) - halfPackage, (int)ReadByte(tile.w + 2) - halfPackage) * tileScale;
+    stateVertices[globalIndex] = float4(origin + float3(packed & 31u, (packed >> 5) & 31u, (packed >> 10) & 31u) * subTileScale, 1);
+    packedIndices[i] = globalIndex;
+}
+
+float Delta(uint b)
+{
+    int d = (int)b - 128;
+    return (d < 0 ? -(d*d) : d*d) * (1.0 / 16384.0);
+}
+
+[numthreads(128,1,1)]
+void RestoreDelta(uint3 id : SV_DispatchThreadID)
+{
+    uint i = id.x;
+    if (i >= vertexCount) return;
+    uint p = headerSize + i * 3;
+    uint index = packedIndices[i];
+    stateVertices[index].xyz += float3(Delta(ReadByte(p)), Delta(ReadByte(p+1)), Delta(ReadByte(p+2)));
+}
+
+[numthreads(128,1,1)]
+void Snapshot(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < vertexCount) snapshotVertices[id.x] = stateVertices[id.x];
+}
+
+[numthreads(128,1,1)]
+void Present(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= vertexCount) return;
+    uint i = meshOffset + id.x;
+    float3 p = lerp(previousVertices[i].xyz, nextVertices[i].xyz, interpolation);
+    meshVertices.Store3(id.x * meshStride, asuint(p));
+}
+
+[numthreads(128,1,1)]
+void FaceNormals(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= faceCount) return;
+    uint a = (uint)triangleIndices[id.x*3] * meshStride;
+    uint b = (uint)triangleIndices[id.x*3+1] * meshStride;
+    uint c = (uint)triangleIndices[id.x*3+2] * meshStride;
+    float3 p = asfloat(meshVertices.Load3(a));
+    float3 q = asfloat(meshVertices.Load3(b));
+    float3 r = asfloat(meshVertices.Load3(c));
+    float3 aEdge = q-p, bEdge = r-p;
+    float3 n = cross(aEdge, bEdge);
+    // Quantization/interpolation can collapse a face into a line. Reject its
+    // roundoff residual before normalization amplifies it into an arbitrary normal.
+    float threshold = max(1e-30, 1e-12 * dot(aEdge,aEdge) * dot(bEdge,bEdge));
+    if (dot(n,n) <= threshold) n = 0;
+    faceNormals[id.x] = float4(n, 0);
+}
+
+[numthreads(128,1,1)]
+void VertexNormals(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= vertexCount) return;
+    float3 n = 0;
+    for (int j=adjacencyOffsets[id.x]; j<adjacencyOffsets[id.x+1]; ++j)
+        n += faceNormals[adjacencyFaces[j]].xyz;
+    float len2 = dot(n,n);
+    n = len2 > 1e-20 ? n * rsqrt(len2) : float3(0,0,0);
+    meshVertices.Store3(id.x * meshStride + normalOffset, asuint(n));
+}

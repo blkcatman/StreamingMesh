@@ -26,11 +26,26 @@ namespace StreamingMesh
   {
     [SerializeField]
     string m_ChannelAddress = "http://127.0.0.1:8000/channels/channel_UnityChanTest/";
+
+    /// <summary>Configure an inactive receiver before activating it and starting requests.</summary>
+    public void ConfigureChannel(string address)
+    {
+      if (gameObject.activeInHierarchy)
+        throw new InvalidOperationException("Configure the channel before activating the receiver.");
+      if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) ||
+          (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+          !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment))
+        throw new ArgumentException("Enter an HTTP(S) channel directory URL.", nameof(address));
+      m_ChannelAddress = uri.AbsoluteUri.TrimEnd('/') + "/";
+    }
     [SerializeField]
     string m_PlaylistName = "stream.json";
 
     [SerializeField]
     bool m_AutoPlay = true;
+
+    [SerializeField] ReceiverDecodeBackend m_DecodeBackend = ReceiverDecodeBackend.Auto;
+    [SerializeField] ReceiverNormalMode m_NormalMode = ReceiverNormalMode.Auto;
 
     //Shaders
     public Shader m_DefaultShader;
@@ -38,6 +53,9 @@ namespace StreamingMesh
 
     //StreamingRenderers
     StreamingMeshRenderer m_MeshRenderer = null;
+    StreamingMeshRenderer m_InitializingMeshRenderer;
+    public bool IsInitializing { get; private set; }
+    public string ConnectionStatus { get; private set; } = "Waiting to connect";
     string m_StreamPlayListName = ""; //"stream.stmj"
     string m_CurrentStreamPlaylistData = "";
 
@@ -54,6 +72,12 @@ namespace StreamingMesh
     //Timer Settings
     double m_CurrentTime = 0.0f;
     bool m_PlaybackClockStarted = false;
+    bool m_AudioSeekRequested;
+    bool m_AudioPlaying;
+    float m_NextSyncLogTime;
+    int m_StatsFrames;
+    double m_StatsSeconds;
+    float m_StatsWorstFrame;
 
     //Othres
     AudioSource m_AudioSource = null;
@@ -101,7 +125,9 @@ namespace StreamingMesh
 
       if(m_AutoPlay && m_MeshRenderer == null)
       {
-        yield return StartCoroutine(CreateInitialData());
+        IsInitializing = true;
+        try { yield return StartCoroutine(CreateInitialData()); }
+        finally { IsInitializing = false; }
         m_ElapsedTimeToPolling = m_PollingInterval;
         SetUpdateSettings();
 #if STM_DEBUG
@@ -117,6 +143,8 @@ namespace StreamingMesh
 
     void OnDestroy()
     {
+      m_InitializingMeshRenderer?.Dispose();
+      m_InitializingMeshRenderer = null;
       if(m_MeshRenderer != null)
       {
         m_MeshRenderer.Dispose();
@@ -133,12 +161,13 @@ namespace StreamingMesh
     {
       //If initial data is not loaded, skip update
       if(m_MeshRenderer == null) return;
+      m_StatsFrames++;
+      m_StatsSeconds += Time.unscaledDeltaTime;
+      m_StatsWorstFrame = Mathf.Max(m_StatsWorstFrame, Time.unscaledDeltaTime);
 
-      double audioTime;
-      if (m_UseFmp4Audio && m_Fmp4AudioPlayer != null && m_Fmp4AudioPlayer.TryGetTime(out audioTime))
+      if (m_UseFmp4Audio && m_Fmp4AudioPlayer != null)
       {
-        m_CurrentTime = audioTime;
-        m_PlaybackClockStarted = true;
+        UpdateSynchronizedPlayback();
       }
 #if UNITY_WEBGL
       else if (!m_PlaybackClockStarted)
@@ -156,17 +185,13 @@ namespace StreamingMesh
         m_CurrentTime = (double)m_AudioOffset / (double)(m_AudioSampleRate * 2);
       }
 #endif
-      m_MeshRenderer.UpdateWithTime(m_CurrentTime);
+      if (!m_UseFmp4Audio)
+        m_MeshRenderer.UpdateWithTime(m_CurrentTime);
 #if UNITY_WEBGL
       if (!m_UseFmp4Audio && m_PlaybackClockStarted &&
           m_MeshRenderer.PlaybackState == StreamingPlaybackState.Playing)
         m_CurrentTime += Time.deltaTime;
 #endif
-
-      if(m_AudioRenderer != null ? m_AudioRenderer.IsPlayable : false)
-      {
-
-      }
 
       //Fetch playlists
       m_ElapsedTimeToPolling += Time.deltaTime;
@@ -176,6 +201,74 @@ namespace StreamingMesh
         StartCoroutine(FetchPlayLists());
       }
 
+    }
+
+    void UpdateSynchronizedPlayback()
+    {
+      // Decode and fetch continue while the audio clock is paused.
+      if (!m_PlaybackClockStarted)
+      {
+        m_Fmp4AudioPlayer.SetPlaying(false);
+        m_MeshRenderer.UpdateWithTime(m_CurrentTime);
+        if (!m_AudioSeekRequested)
+        {
+          ConnectionStatus = "Buffering mesh and audio...";
+          double startTime;
+          if (m_MeshRenderer.BufferedFrameCount < 2 ||
+              !m_MeshRenderer.TryGetPlaybackStartTime(out startTime) ||
+              m_Fmp4AudioPlayer.State < 1)
+            return;
+          m_CurrentTime = startTime;
+          m_Fmp4AudioPlayer.Seek(startTime);
+          m_AudioSeekRequested = true;
+          return;
+        }
+      }
+
+      double audioTime;
+      if (!m_Fmp4AudioPlayer.TryGetTime(out audioTime))
+      {
+        m_Fmp4AudioPlayer.SetPlaying(false);
+        m_AudioPlaying = false;
+        ConnectionStatus = "Waiting for audio...";
+        if (Debug.isDebugBuild && Time.realtimeSinceStartup >= m_NextSyncLogTime)
+        {
+          m_NextSyncLogTime = Time.realtimeSinceStartup + 5;
+          Debug.Log($"StreamingMesh audio wait: state={m_Fmp4AudioPlayer.State}, seekRequested={m_AudioSeekRequested}, mesh={m_MeshRenderer.PresentedTime:F3}, bufferedUntil={m_MeshRenderer.BufferedUntil:F3}, gpu={m_MeshRenderer.IsGpuResident}");
+        }
+        return;
+      }
+
+      m_CurrentTime = audioTime;
+      m_MeshRenderer.UpdateWithTime(audioTime);
+      // A recovered keyframe can start after the paused audio position. Seek to
+      // the new common range instead of waiting forever for the missing poses.
+      if (!m_AudioPlaying && m_MeshRenderer.TryGetPlaybackStartTime(out double recoveredStart) &&
+          recoveredStart > audioTime + 0.001)
+      {
+        m_Fmp4AudioPlayer.SetPlaying(false);
+        m_Fmp4AudioPlayer.Seek(recoveredStart);
+        m_CurrentTime = recoveredStart;
+        ConnectionStatus = "Recovering at keyframe...";
+        return;
+      }
+      // Pause before exhausting the decoded range; resume with a larger margin.
+      double lead = m_AudioPlaying ? 0.05 : Math.Max(StreamingMeshRenderer.ResumeBufferSeconds, m_MeshRenderer.FrameInterval * 2);
+      bool ready = m_MeshRenderer.CanPlayAt(audioTime, lead);
+      m_Fmp4AudioPlayer.SetPlaying(ready);
+      if (ready != m_AudioPlaying)
+        Debug.Log($"StreamingMesh sync: {(ready ? "play" : "buffer")}, audio={audioTime:F3}, mesh={m_MeshRenderer.PresentedTime:F3}, bufferedUntil={m_MeshRenderer.BufferedUntil:F3}");
+      m_AudioPlaying = ready;
+      if (ready) m_PlaybackClockStarted = true;
+      ConnectionStatus = ready ? "Playing / audio and mesh synchronized" : "Buffering / audio paused";
+      if (Debug.isDebugBuild && Time.realtimeSinceStartup >= m_NextSyncLogTime)
+      {
+        m_NextSyncLogTime = Time.realtimeSinceStartup + 5;
+        Debug.Log($"StreamingMesh sync clock: audio={audioTime:F3}, mesh={m_MeshRenderer.PresentedTime:F3}, bufferedUntil={m_MeshRenderer.BufferedUntil:F3}, playing={ready}, gpu={m_MeshRenderer.IsGpuResident}, pending={m_MeshRenderer.PendingGpuFrameCount}, queued={m_MeshRenderer.EncodedFrameCount}, fps={m_StatsFrames / Math.Max(0.001, m_StatsSeconds):F1}, worstFrameMs={m_StatsWorstFrame * 1000:F1}");
+        m_StatsFrames = 0;
+        m_StatsSeconds = 0;
+        m_StatsWorstFrame = 0;
+      }
     }
 
 #if !UNITY_WEBGL
@@ -192,12 +285,19 @@ namespace StreamingMesh
 
     IEnumerator CreateInitialData()
     {
+      ConnectionStatus = "Loading channel information...";
       HttpWrapper wrapper = new HttpWrapper();
 
       //Get ChannelInfo
       ChannelInfo channelInfo = null;
       wrapper.RequestInfo<ChannelInfo>(GetAbsoluteURL(m_PlaylistName), info => {channelInfo = info;});
       yield return new WaitUntil(wrapper.RequestFinished);
+
+      if (channelInfo == null)
+      {
+        ConnectionStatus = "Channel request failed. Check the URL, server and local network permission.";
+        yield break;
+      }
 
       if(channelInfo != null)
       {
@@ -216,6 +316,7 @@ namespace StreamingMesh
         }
 
         //Get CombinedData
+        ConnectionStatus = "Downloading model and textures. Please wait...";
         byte[] combinedData = null;
         wrapper.RequestBinary(GetAbsoluteURL(channelInfo.data), bin => {
           if(bin != null) {
@@ -224,7 +325,11 @@ namespace StreamingMesh
         });
         yield return new WaitUntil(wrapper.RequestFinished);
 
-        if(combinedData == null) yield break;
+        if(combinedData == null)
+        {
+          ConnectionStatus = "Model download failed. Reconnect to retry.";
+          yield break;
+        }
 
         StreamingMeshRenderer meshRenderer = new StreamingMeshRenderer
         {
@@ -233,6 +338,7 @@ namespace StreamingMesh
           FrameInterval = channelInfo.frame_interval,
           CombinedFrames = channelInfo.combined_frames
         };
+        m_InitializingMeshRenderer = meshRenderer;
 
         StreamingAudioRenderer audioRenderer = new StreamingAudioRenderer
         {
@@ -253,14 +359,39 @@ namespace StreamingMesh
         //Split Textures and Materials and Mesh from CombinedData
         int offsetBytes = 0;
 
+        // Material records follow the texture payloads. Inspect them first so a
+        // fallback shader doesn't allocate large maps it never samples.
+        var requiredTextures = new HashSet<string>();
+        int materialOffset = 0;
+        foreach (int size in channelInfo.textureSizes) materialOffset += size;
+        foreach (int size in channelInfo.materialSizes)
+        {
+          var bytes = new byte[size];
+          Buffer.BlockCopy(combinedData, materialOffset, bytes, 0, size);
+          var info = InfoConverter.Deserialize<MaterialInfo>(bytes);
+          Shader shader;
+          if (!m_CustomShaders.GetTable().TryGetValue(info.name.TrimEnd('\0'), out shader))
+            shader = m_DefaultShader;
+          foreach (var property in info.properties)
+          {
+            int index = shader.FindPropertyIndex(property.name);
+            if (property.type == 4 && index >= 0 &&
+                shader.GetPropertyType(index) == UnityEngine.Rendering.ShaderPropertyType.Texture)
+              requiredTextures.Add(property.value);
+          }
+          materialOffset += size;
+        }
+
         //Split Textures
         List<string> textureNames = channelInfo.textures;
         List<int> textureSizes = channelInfo.textureSizes;
         for(int i = 0; i < textureSizes.Count; i++)
         {
+          ConnectionStatus = "Loading textures...";
           int size = textureSizes[i];
-          Texture2D texture = TextureConverter.DeserializeFromBinary(combinedData, offsetBytes, size);
           string name = textureNames[i];
+          Texture2D texture = requiredTextures.Contains(name)
+            ? TextureConverter.DeserializeFromBinary(combinedData, offsetBytes, size) : null;
           if(texture != null) {
             meshRenderer.AddTexture(name, texture);
           }
@@ -321,9 +452,14 @@ namespace StreamingMesh
 
         //CreateVertexBuffer;
         meshRenderer.CreateVertexBuffer();
+        meshRenderer.DecodeBackend = m_DecodeBackend;
+        meshRenderer.NormalMode = m_NormalMode;
         meshRenderer.CreateVertexContainer(channelInfo.package_size, channelInfo.container_size);
         meshRenderer.RootGameObject = rootGameObject;
         m_MeshRenderer = meshRenderer;
+        m_InitializingMeshRenderer = null;
+        ConnectionStatus = "Model ready / receiving stream";
+        Debug.Log($"StreamingMesh ready: {channelInfo.meshes.Count} meshes, {meshRenderer.TextureDictionary.Count} textures.");
       }
     }
 
@@ -334,7 +470,16 @@ namespace StreamingMesh
 #endif
     }
 
+    bool m_FetchingPlaylists;
     IEnumerator FetchPlayLists()
+    {
+      if (m_FetchingPlaylists) yield break;
+      m_FetchingPlaylists = true;
+      try { yield return FetchPlayListsCore(); }
+      finally { m_FetchingPlaylists = false; }
+    }
+
+    IEnumerator FetchPlayListsCore()
     {
       List<StreamInfo> streamPlayList = new List<StreamInfo>();
       List<AudioInfo> audioPlayList = new List<AudioInfo>();
@@ -367,16 +512,39 @@ namespace StreamingMesh
       for(int i = 0; i < length; i++)
       {
         if(i <= streamPlayList.Count - 1 && m_MeshRenderer != null) {
-          HttpWrapper wrapper = new HttpWrapper();
-          wrapper.RequestBinary(GetAbsoluteURL(streamPlayList[i].video), data => {
-            m_MeshRenderer.AddVertexData(Path.GetFileNameWithoutExtension(streamPlayList[i].video), data, streamPlayList[i].startTicks);
-          });
-          yield return new WaitUntil(wrapper.RequestFinished);
+          var renderer = m_MeshRenderer;
+          var info = streamPlayList[i];
+          // Bound decoded payload memory when joining a long-running channel.
+          while (!renderer.CanAcceptChunk)
+          {
+            if (this == null || m_MeshRenderer != renderer) yield break;
+            yield return null;
+          }
+          bool accepted = false;
+          for (int attempt = 0; attempt < 3 && !accepted; attempt++)
+          {
+            byte[] bytes = null;
+            var wrapper = new HttpWrapper();
+            // This callback owns only a local byte array, not a Receiver that
+            // may already have been destroyed by Connect / Reconnect.
+            wrapper.RequestBinary(GetAbsoluteURL(info.video), data => bytes = data);
+            yield return new WaitUntil(wrapper.RequestFinished);
+            if (this == null || m_MeshRenderer != renderer) yield break;
+            if (bytes != null)
+            {
+              var parsed = renderer.AddVertexDataAsync(Path.GetFileNameWithoutExtension(info.video), bytes, info.startTicks);
+              yield return new WaitUntil(() => parsed.IsCompleted);
+              if (this == null || m_MeshRenderer != renderer) yield break;
+              accepted = !parsed.IsFaulted && !parsed.IsCanceled && parsed.Result;
+            }
+            if (!accepted) yield return new WaitForSecondsRealtime(0.25f * (attempt + 1));
+          }
+          if (!accepted) Debug.LogWarning("StreamingMesh chunk download failed after retries: " + info.video);
         }
         if(i <= audioPlayList.Count - 1 && m_AudioRenderer != null) {
           HttpWrapper wrapper = new HttpWrapper();
           wrapper.RequestAudio(GetAbsoluteURL(audioPlayList[i].audio), audio => {
-            m_AudioRenderer.AddAudioData(Path.GetFileNameWithoutExtension(audioPlayList[i].audio), audio);
+            if (this != null && m_AudioRenderer != null) m_AudioRenderer.AddAudioData(Path.GetFileNameWithoutExtension(audioPlayList[i].audio), audio);
           });
           yield return new WaitUntil(wrapper.RequestFinished);
         }

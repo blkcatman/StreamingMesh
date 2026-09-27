@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace StreamingMesh
 {
@@ -19,7 +20,9 @@ namespace StreamingMesh
     [Header("Fragmented MP4 audio")]
     [SerializeField] string ffmpegPath = "ffmpeg";
     [Range(32, 320)] [SerializeField] int bitrateKbps = 128;
-    [Min(0.25f)] [SerializeField] float segmentDuration = 1.024f;
+    [UnityEngine.Serialization.FormerlySerializedAs("segmentDuration")]
+    [Tooltip("Target duration of each audio segment. Actual durations vary to align with encoded audio frame boundaries. When STMHttpSender starts recording, this is overridden with Combined Frames / Frame Rate (minimum 0.25 seconds).")]
+    [Min(0.25f)] [SerializeField] float targetSegmentDurationSeconds = 1.024f;
     [Range(2, 30)] [SerializeField] int maximumQueuedSeconds = 8;
 
     readonly object queueLock = new object();
@@ -27,6 +30,21 @@ namespace StreamingMesh
     readonly AutoResetEvent queueSignal = new AutoResetEvent(false);
     readonly HashSet<string> emittedFragments = new HashSet<string>();
     string emittedPlaylist;
+
+    sealed class AudioFragment
+    {
+      public string name;
+      public byte[] data;
+      public int samples;
+    }
+    sealed class EncoderOutput
+    {
+      public byte[] init;
+      public string playlist;
+      public readonly List<AudioFragment> fragments = new List<AudioFragment>();
+    }
+    Task<EncoderOutput> outputRead;
+    double nextOutputPoll;
 
     Process process;
     Thread writerThread;
@@ -56,6 +74,12 @@ namespace StreamingMesh
     public Fmp4PlaylistData OnFmp4PlaylistData;
 
     public bool IsStartRecord { get { return startRecord; } }
+    public void Record(float durationSeconds)
+    {
+      if (startRecord) return;
+      targetSegmentDurationSeconds = Mathf.Max(0.25f, durationSeconds);
+      Record();
+    }
     public string OutputDirectory { get { return outputDirectory; } }
 
     public void Record()
@@ -81,6 +105,8 @@ namespace StreamingMesh
         queuedBytes = 0;
       }
       emittedFragments.Clear();
+      outputRead = null;
+      nextOutputPoll = 0;
       emittedPlaylist = null;
       nextStartSample = 0;
       nextSequence = 0;
@@ -122,7 +148,7 @@ namespace StreamingMesh
 
     void StartEncoderProcess()
     {
-      string duration = segmentDuration.ToString("0.###", CultureInfo.InvariantCulture);
+      string duration = targetSegmentDurationSeconds.ToString("0.###", CultureInfo.InvariantCulture);
       string arguments = string.Format(
         CultureInfo.InvariantCulture,
         "-hide_banner -loglevel warning -f s16le -ar {0} -ac {1} -i pipe:0 " +
@@ -259,73 +285,79 @@ namespace StreamingMesh
 
     void PollEncoderOutput()
     {
-      if (string.IsNullOrEmpty(outputDirectory))
-        return;
-
-      string initPath = Path.Combine(outputDirectory, "audio-init.mp4");
-      if (!initEmitted && File.Exists(initPath))
+      if (string.IsNullOrEmpty(outputDirectory)) return;
+      if (outputRead != null)
       {
-        byte[] initData = TryReadCompletedFile(initPath);
-        if (initData != null)
+        if (!outputRead.IsCompleted) return;
+        var completed = outputRead;
+        outputRead = null;
+        if (completed.IsFaulted)
+          UnityEngine.Debug.LogWarning("StreamingMesh audio output read failed: " + completed.Exception.GetBaseException().Message);
+        else if (!completed.IsCanceled)
         {
-          initEmitted = true;
-          if (OnFmp4InitData != null)
-            OnFmp4InitData("audio-init.mp4", initData);
+          var result = completed.Result;
+          if (result.init != null)
+          {
+            initEmitted = true;
+            OnFmp4InitData?.Invoke("audio-init.mp4", result.init);
+          }
+          foreach (var fragment in result.fragments)
+          {
+            emittedFragments.Add(fragment.name);
+            OnFmp4FragmentData?.Invoke(nextSequence++, nextStartSample, fragment.samples, fragment.name, fragment.data);
+            nextStartSample += fragment.samples;
+          }
+          if (result.playlist != null)
+          {
+            emittedPlaylist = result.playlist;
+            OnFmp4PlaylistData?.Invoke("audio.m3u8", System.Text.Encoding.UTF8.GetBytes(result.playlist));
+          }
         }
       }
+      if (Time.realtimeSinceStartupAsDouble < nextOutputPoll) return;
+      nextOutputPoll = Time.realtimeSinceStartupAsDouble + 0.1;
+      string directory = outputDirectory, previous = emittedPlaylist;
+      bool needsInit = !initEmitted;
+      var sent = new HashSet<string>(emittedFragments);
+      outputRead = Task.Run(() => ReadEncoderOutput(directory, previous, needsInit, sent));
+    }
 
-      if (!initEmitted)
-        return;
-      string playlistPath = Path.Combine(outputDirectory, "audio.m3u8");
-      if (!File.Exists(playlistPath))
-        return;
-
+    static EncoderOutput ReadEncoderOutput(string directory, string previous, bool needsInit, HashSet<string> sent)
+    {
+      var result = new EncoderOutput();
+      string path = Path.Combine(directory, "audio.m3u8");
       string[] lines;
-      try
+      try { if (!File.Exists(path)) return result; lines = File.ReadAllLines(path); }
+      catch (IOException) { return result; }
+      // FFmpeg publishes this playlist by rename after finishing the init/fragment.
+      // Do not expose a still-being-created init file before the first playlist.
+      if (needsInit)
       {
-        lines = File.ReadAllLines(playlistPath);
+        result.init = TryReadCompletedFile(Path.Combine(directory, "audio-init.mp4"));
+        if (result.init == null) return result;
       }
-      catch (IOException)
+      string playlist = string.Join("\n", lines) + "\n";
+      if (playlist == previous) return result;
+      double duration = 0;
+      foreach (string raw in lines)
       {
-        return;
-      }
-
-      double duration = 0.0;
-      for (int i = 0; i < lines.Length; i++)
-      {
-        string line = lines[i].Trim();
+        string line = raw.Trim();
         if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
         {
-          string value = line.Substring(8).TrimEnd(',');
-          double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out duration);
+          double.TryParse(line.Substring(8).TrimEnd(','), NumberStyles.Float, CultureInfo.InvariantCulture, out duration);
           continue;
         }
-        if (line.Length == 0 || line[0] == '#')
-          continue;
-
-        string fileName = Path.GetFileName(line);
-        if (emittedFragments.Contains(fileName))
-          continue;
-        string fragmentPath = Path.Combine(outputDirectory, fileName);
-        byte[] fragment = TryReadCompletedFile(fragmentPath);
-        if (fragment == null)
-          continue;
-
-        int sampleCount = Math.Max(1, (int)Math.Round(duration * EncodedSampleRate));
-        emittedFragments.Add(fileName);
-        if (OnFmp4FragmentData != null)
-          OnFmp4FragmentData(nextSequence, nextStartSample, sampleCount, fileName, fragment);
-        nextSequence++;
-        nextStartSample += sampleCount;
+        if (line.Length == 0 || line[0] == '#') continue;
+        string name = Path.GetFileName(line);
+        if (sent.Contains(name)) continue;
+        byte[] data = TryReadCompletedFile(Path.Combine(directory, name));
+        // Do not advertise an unavailable fragment, or skip its sample interval.
+        if (data == null) return result;
+        result.fragments.Add(new AudioFragment {name=name, data=data,
+          samples=Math.Max(1, (int)Math.Round(duration * EncodedSampleRate))});
       }
-
-      string playlist = string.Join("\n", lines) + "\n";
-      if (!string.Equals(playlist, emittedPlaylist, StringComparison.Ordinal))
-      {
-        emittedPlaylist = playlist;
-        if (OnFmp4PlaylistData != null)
-          OnFmp4PlaylistData("audio.m3u8", System.Text.Encoding.UTF8.GetBytes(playlist));
-      }
+      result.playlist = playlist;
+      return result;
     }
 
     static byte[] TryReadCompletedFile(string path)

@@ -13,6 +13,9 @@
 
 # StreamingMesh runtime/generated data
 /DevData/
+/Data/
+/Assets/Resources/PerformanceTestRunInfo.json*
+/Assets/Resources/PerformanceTestRunSettings.json*
 
 # Local work backups
 /_work_backups/

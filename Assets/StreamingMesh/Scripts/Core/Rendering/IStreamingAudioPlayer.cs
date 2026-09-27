@@ -8,6 +8,8 @@ namespace StreamingMesh.Core.Rendering
     bool Initialize(string channelUrl, ChannelInfo channelInfo);
     bool TryGetTime(out double time);
     int State { get; }
+    // Initialization and seeking must leave playback paused until the receiver is ready.
+    void SetPlaying(bool playing);
     void Seek(double time);
   }
 

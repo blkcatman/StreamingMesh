@@ -33,6 +33,7 @@ mergeInto(LibraryManager.library, {
       seen: {},
       destroyed: false,
       fetching: false,
+      playbackRequested: false,
       state: 0,
       timer: 0,
       gestureHandler: null
@@ -51,7 +52,7 @@ mergeInto(LibraryManager.library, {
     }
 
     function requestPlayback() {
-      if (player.destroyed || !audio.paused)
+      if (player.destroyed || !player.playbackRequested || !audio.paused || audio.seeking)
         return;
       var promise = audio.play();
       if (promise && promise.catch) {
@@ -64,6 +65,7 @@ mergeInto(LibraryManager.library, {
     player.gestureHandler = function() {
       requestPlayback();
     };
+    player.requestPlayback = requestPlayback;
     document.addEventListener("pointerdown", player.gestureHandler, true);
     document.addEventListener("keydown", player.gestureHandler, true);
 
@@ -147,7 +149,7 @@ mergeInto(LibraryManager.library, {
   STM_Fmp4_GetTime: function(handle) {
     var root = Module.StreamingMeshFmp4;
     var player = root && root.players[handle];
-    return player && player.state >= 1 ? player.audio.currentTime : -1.0;
+    return player && player.state >= 1 && !player.audio.seeking ? player.audio.currentTime : -1.0;
   },
 
   STM_Fmp4_GetState: function(handle) {
@@ -159,8 +161,23 @@ mergeInto(LibraryManager.library, {
   STM_Fmp4_Seek: function(handle, time) {
     var root = Module.StreamingMeshFmp4;
     var player = root && root.players[handle];
-    if (player)
+    if (player) {
+      player.playbackRequested = false;
+      player.audio.pause();
       player.audio.currentTime = Math.max(0, time);
+    }
+  },
+
+  STM_Fmp4_SetPlaying: function(handle, playing) {
+    var root = Module.StreamingMeshFmp4;
+    var player = root && root.players[handle];
+    if (!player)
+      return;
+    player.playbackRequested = !!playing;
+    if (playing)
+      player.requestPlayback();
+    else
+      player.audio.pause();
   },
 
   STM_Fmp4_Destroy: function(handle) {

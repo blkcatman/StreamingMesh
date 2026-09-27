@@ -9,7 +9,7 @@ namespace StreamingMesh.Editor
 {
   public static class StreamingMeshWebBuild
   {
-    const string ReceiverScene = "Assets/TestScene.unity";
+    const string KaguraReceiverScene = "Assets/Samples/UnityChanKAGURA/Scenes/KaguraReceiver.unity";
     const string DefaultOutput = "Builds/WebReceiver";
 
     [MenuItem("Tools/StreamingMesh/Configure WebGPU Receiver")]
@@ -29,19 +29,19 @@ namespace StreamingMesh.Editor
       Debug.Log("StreamingMesh Web receiver configured for WebGPU with WebGL 2 fallback.");
     }
 
-    [MenuItem("Tools/StreamingMesh/Build WebGPU Receiver")]
-    public static void BuildReceiver()
+    [MenuItem("Tools/StreamingMesh/Build Web KAGURA Receiver")]
+    public static void BuildKaguraReceiver()
     {
-      BuildReceiver(DefaultOutput);
+      BuildReceiver(DefaultOutput, KaguraReceiverScene);
     }
 
-    public static void BuildReceiverCommandLine()
+    public static void BuildKaguraReceiverCommandLine()
     {
       string output = GetCommandLineValue("-streamingMeshOutput") ?? DefaultOutput;
-      BuildReceiver(output);
+      BuildReceiver(output, KaguraReceiverScene);
     }
 
-    static void BuildReceiver(string output)
+    static void BuildReceiver(string output, string scene)
     {
       ConfigureWebGpuReceiver();
       string fullOutput = Path.GetFullPath(output);
@@ -49,7 +49,7 @@ namespace StreamingMesh.Editor
 
       BuildPlayerOptions options = new BuildPlayerOptions
       {
-        scenes = new[] { ReceiverScene },
+        scenes = new[] { scene },
         locationPathName = fullOutput,
         target = BuildTarget.WebGL,
         options = BuildOptions.None

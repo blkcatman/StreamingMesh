@@ -10,6 +10,8 @@ import mimetypes
 import os
 import re
 import secrets
+import tempfile
+import threading
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +36,7 @@ class StreamingMeshServer(ThreadingHTTPServer):
         self.data_root = data_root.resolve()
         self.provision_token = provision_token
         self.auth_tokens: dict[str, str] = {}
+        self.publish_lock = threading.Lock()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -261,7 +264,7 @@ class Handler(BaseHTTPRequestHandler):
         for pattern in ("audio-init.mp4", "audio-*.m4s", "audio.m3u8"):
             for stale_audio in root.glob(pattern):
                 stale_audio.unlink()
-        (root / "stream.json").write_bytes(body)
+        self._atomic_write(root / "stream.json", body)
         self._send_json({"push_token": token})
 
     def _has_bearer_token(self, expected_token: str) -> bool:
@@ -315,27 +318,47 @@ class Handler(BaseHTTPRequestHandler):
             content_type = "application/vnd.apple.mpegurl"
         elif target.suffix in (".mp4", ".m4s") and target.name.startswith("audio"):
             content_type = "audio/mp4"
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(target.stat().st_size))
-        self.end_headers()
-        with target.open("rb") as source:
-            while True:
-                chunk = source.read(64 * 1024)
+        # Open first, then obtain the length from that same inode. An atomic
+        # publisher may replace the path while this response is being sent.
+        try:
+            source = target.open("rb")
+        except FileNotFoundError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        with source:
+            remaining = os.fstat(source.fileno()).st_size
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(remaining))
+            self.end_headers()
+            while remaining:
+                chunk = source.read(min(64 * 1024, remaining))
                 if not chunk:
                     break
                 self.wfile.write(chunk)
-
-    def _write_file(self, root: Path, relative: str, body: bytes) -> None:
-        target = self._safe_path(root, relative)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(body)
+                remaining -= len(chunk)
 
     @staticmethod
-    def _append_playlist(target: Path, body: bytes) -> None:
+    def _atomic_write(target: Path, body: bytes) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("ab") as output:
-            output.write(body.rstrip(b"\r\n") + b"\n")
+        descriptor, temporary = tempfile.mkstemp(prefix=".upload-", dir=target.parent)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(body)
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def _write_file(self, root: Path, relative: str, body: bytes) -> None:
+        self._atomic_write(self._safe_path(root, relative), body)
+
+    def _append_playlist(self, target: Path, body: bytes) -> None:
+        # Readers always see complete records, and concurrent POSTs cannot lose
+        # one another's playlist entries during read-modify-replace.
+        with self.server.publish_lock:
+            existing = target.read_bytes() if target.exists() else b""
+            self._atomic_write(target, existing + body.rstrip(b"\r\n") + b"\n")
 
     @staticmethod
     def _safe_path(root: Path, relative: str) -> Path:

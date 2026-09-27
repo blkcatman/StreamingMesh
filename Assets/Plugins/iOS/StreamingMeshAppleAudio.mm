@@ -6,6 +6,7 @@
 @interface STMAppleAudioPlayer : NSObject
 @property(nonatomic, strong) AVPlayer *player;
 @property(nonatomic, assign) BOOL ended;
+@property(nonatomic, assign) BOOL seeking;
 - (instancetype)initWithPlaylistURL:(NSURL *)url;
 - (double)playbackTime;
 - (int)playbackState;
@@ -28,7 +29,6 @@
       selector:@selector(itemDidReachEnd:)
       name:AVPlayerItemDidPlayToEndTimeNotification
       object:item];
-    [_player play];
   }
   return self;
 }
@@ -47,7 +47,7 @@
 - (double)playbackTime
 {
   AVPlayerItem *item = _player.currentItem;
-  if (item == nil || item.status != AVPlayerItemStatusReadyToPlay)
+  if (_seeking || item == nil || item.status != AVPlayerItemStatusReadyToPlay)
     return -1.0;
 
   double seconds = CMTimeGetSeconds(_player.currentTime);
@@ -61,6 +61,8 @@
     return 0;
   if (item.status == AVPlayerItemStatusFailed)
     return -1;
+  if (_seeking)
+    return 0;
   if (item.status != AVPlayerItemStatusReadyToPlay)
     return 0;
   if (_ended)
@@ -73,9 +75,14 @@
 - (void)seekToSeconds:(double)seconds
 {
   _ended = NO;
+  [_player pause];
+  _seeking = YES;
   CMTime time = CMTimeMakeWithSeconds(MAX(0.0, seconds), 1000000);
-  [_player seekToTime:time toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];
-  [_player play];
+  __weak STMAppleAudioPlayer *weakSelf = self;
+  [_player seekToTime:time toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero
+    completionHandler:^(BOOL finished) {
+      dispatch_async(dispatch_get_main_queue(), ^{ weakSelf.seeking = NO; });
+    }];
 }
 
 @end
@@ -156,6 +163,21 @@ extern "C"
       STMAppleAudioPlayer *entry = STMPlayers()[@(handle)];
       if (entry != nil)
         [entry seekToSeconds:time];
+    });
+  }
+
+  __attribute__((visibility("default")))
+  void STM_AppleAudio_SetPlaying(int32_t handle, int32_t playing)
+  {
+    STMRunOnMain(^{
+      STMAppleAudioPlayer *entry = STMPlayers()[@(handle)];
+      if (playing && !entry.seeking && !entry.ended)
+      {
+        if (entry.player.rate == 0.0)
+          [entry.player play];
+      }
+      else
+        [entry.player pause];
     });
   }
 
