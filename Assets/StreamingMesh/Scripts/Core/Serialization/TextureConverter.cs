@@ -8,9 +8,39 @@ public class TextureConverter
     public static byte[] SerializeToPNG(Texture texture)
     {
 #if UNITY_EDITOR
+      var readable = ReadableCopy(texture, false);
+      if (readable == null) return null;
+      try { return readable.EncodeToPNG(); }
+      finally { UnityEngine.Object.DestroyImmediate(readable); }
+#else
+      return null;
+#endif
+    }
+
+#if UNITY_EDITOR
+    public static Texture2D ExportGpu(Texture texture, GpuTextureFormat format, out TexturePayloadInfo info)
+    {
+      info = null;
+      var readable = ReadableCopy(texture, true);
+      if (readable == null) throw new ArgumentNullException(nameof(texture));
+      try
+      {
+        var payload = new TexturePayloadInfo { format = format.ToString(), width = readable.width, height = readable.height,
+          mipCount = readable.mipmapCount, linear = !UnityEngine.Experimental.Rendering.GraphicsFormatUtility.IsSRGBFormat(readable.graphicsFormat) };
+        int bytes = payload.ByteCount();
+        UnityEditor.EditorUtility.CompressTexture(readable, payload.UnityFormat(), UnityEditor.TextureCompressionQuality.Normal);
+        if (readable.format != payload.UnityFormat() || readable.GetRawTextureData<byte>().Length != bytes)
+          throw new InvalidOperationException("GPU texture export failed: " + texture.name + " / " + format);
+        info = payload; return readable;
+      }
+      catch { UnityEngine.Object.DestroyImmediate(readable); throw; }
+    }
+
+    static Texture2D ReadableCopy(Texture texture, bool includeMips)
+    {
       if (texture == null) return null;
       if (texture.dimension != UnityEngine.Rendering.TextureDimension.Tex2D)
-        throw new ArgumentException("StreamingMesh PNG export requires a 2D texture.");
+        throw new ArgumentException("StreamingMesh export requires a 2D texture.");
       var importer = UnityEditor.AssetImporter.GetAtPath(UnityEditor.AssetDatabase.GetAssetPath(texture)) as UnityEditor.TextureImporter;
       bool normal = importer != null && importer.textureType == UnityEditor.TextureImporterType.NormalMap;
       bool srgb = !normal && UnityEngine.Experimental.Rendering.GraphicsFormatUtility.IsSRGBFormat(texture.graphicsFormat);
@@ -31,9 +61,10 @@ public class TextureConverter
         }
         else Graphics.Blit(texture,temporary);
         RenderTexture.active=temporary;
-        readable=new Texture2D(texture.width,texture.height,TextureFormat.RGBA32,false,!srgb);
-        readable.ReadPixels(new Rect(0,0,texture.width,texture.height),0,0,false); readable.Apply(false,false);
-        return readable.EncodeToPNG();
+        int mipCount = includeMips && texture is Texture2D source ? source.mipmapCount : 1;
+        readable=new Texture2D(texture.width,texture.height,TextureFormat.RGBA32,mipCount,!srgb);
+        readable.ReadPixels(new Rect(0,0,texture.width,texture.height),0,0,false); readable.Apply(mipCount > 1,false);
+        var result = readable; readable = null; return result;
       }
       finally
       {
@@ -42,10 +73,8 @@ public class TextureConverter
         if (readable != null) UnityEngine.Object.DestroyImmediate(readable);
         if (exportNormal != null) UnityEngine.Object.DestroyImmediate(exportNormal);
       }
-#else
-      return null;
-#endif
     }
+#endif
 
     public static Texture2D DeserializeFromBinary(byte[] data, int offsetBytes, int dataSize, bool linear = false, bool mipChain = true, bool memoryDiagnostics = false)
     {

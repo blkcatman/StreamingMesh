@@ -1,6 +1,6 @@
 # StreamingMesh エンコード／デコード仕様
 
-この文書は、事前データ `stream.bin`、時系列頂点データ `*.stmv`、fMP4音声がどのように生成・配信され、受信側で復元されるかを、現在のプロトコルv3実装に沿って説明する。Meshフレーム形式はv2から変更しない。
+この文書は、事前データ `stream0.bin`、`stream1.bin` …、時系列頂点データ `*.stmv`、fMP4音声がどのように生成・配信され、受信側で復元されるかを、現在のプロトコルv5実装に沿って説明する。Meshフレーム形式はv2から変更しない。
 
 バイト単位のフィールド一覧は [STREAM_FORMAT.md](STREAM_FORMAT.md) も参照すること。
 
@@ -11,7 +11,7 @@
 | ファイル | 更新頻度 | 内容 |
 | --- | --- | --- |
 | `stream.json` | チャンネル作成時 | プロトコル、量子化設定、各データの名前とサイズ |
-| `stream.bin` | チャンネル作成時 | テクスチャ、マテリアル、Meshトポロジーの事前データ |
+| `stream0.bin`、`stream1.bin` … | チャンネル作成時 | メタデータとGPU圧縮Textureを最大16MiB単位でGZip圧縮 |
 | `stream.stmj` | チャンク確定時に1行追記 | `.stmv` の名前、PTS範囲、シーケンス番号範囲 |
 | `000000.stmv` など | リアルタイム | キーフレームと差分フレームをまとめた頂点チャンク |
 | `audio-init.mp4` | 録音開始時 | AACトラックの初期化セグメント |
@@ -22,10 +22,9 @@
 
 ```text
 送信側／チャンネル作成
-  Texture -> PNG ---------+
-  Material -> JSON -------+--> 連結 -> GZip -> stream.bin
-  Meshトポロジー -> JSON -+          |
-                                     +--> サイズ／名前 -> stream.json
+  Material / Mesh -> JSON -> メタデータ用の分割ファイル
+  Texture -> GPUブロック圧縮 -> 16MiBごとにGZip -> streamN.bin
+    -> ID / GPU形式 / サイズ / セグメント / SHA-256 -> stream.jsonを最後に公開
 
 送信側／記録
   SkinnedMeshRenderer.BakeMesh
@@ -37,7 +36,7 @@
     -> StreamInfoをstream.stmjに追記
 
 受信側
-  stream.json + stream.bin
+  stream.json + streamN.bin
     -> 静的なMesh／Material／Textureを生成
   stream.stmj + *.stmv
     -> GZip展開
@@ -51,22 +50,22 @@
 
 - 整数と浮動小数点数は little-endian とする。
 - `timebase_hz` は `10,000,000` で、1 tick は100 nsである。
-- 現行 `protocol_version` は `4` である。Meshフレームヘッダーの識別値は `2` のままである。
+- 現行 `protocol_version` は `5` である。Meshフレームヘッダーの識別値は `2` のままである。
 - `.bin` と `.stmv` は拡張子に関係なく、ファイル全体が GZip ストリームである。
 - GZip処理には `System.IO.Compression.GZipStream` を使用する。
 - GZipは通信量を減らす可逆圧縮であり、頂点の量子化による非可逆圧縮とは別工程である。
 
-## 3. `stream.bin` のエンコード
+## 3. 初期データのエンコード
 
 ### 3.1 収録する事前データ
 
-`stream.bin` に毎フレームの頂点座標は格納しない。格納するのは、受信側が描画用オブジェクトを最初に構築するためのデータである。
+初期データに毎フレームの頂点座標は格納しない。格納するのは、受信側が描画用オブジェクトを最初に構築するためのデータである。
 
 #### テクスチャ
 
 - Material の Texture プロパティから参照される `Texture2D` を収集する。
 - TextureのリソースID（プロジェクト相対パスのSHA-256等）をキーとして重複を除外する。
-- Unity EditorでGPU Blitして読み出し可能な一時Textureへ転送し、`EncodeToPNG()` を実行する。元アセットは再インポートしない。
+- Unity EditorでGPU Blitして読み出し可能な一時Textureへ転送し、`EditorUtility.CompressTexture()` で選択したGPUブロック形式へ圧縮する。元アセットは再インポートしない。
 - sRGB／linearを保持し、NormalMapはインポート時のチャンネル配置から法線XYZを復元してRGBへ保存する。
 
 #### マテリアル
@@ -118,58 +117,23 @@ MeshInfo
 
 静的データには初期頂点座標、法線、接線、ボーンウェイトを格納しない。受信側は `vertexCount` 個のゼロ頂点と送信されたインデックス／UVからMeshを作り、座標を `.stmv` から設定する。法線は表示更新時に再計算する。
 
-### 3.2 非圧縮payloadの並び
+### 3.2 分割ファイルへの格納
 
-`stream.bin` の非圧縮payloadにはmagic、件数、サイズ表を埋め込まない。次の順番でデータ本体だけを連結する。
+Material JSON→Mesh JSON→GPU Textureの順で、1リソースずつ `InitialDataPartWriter` へ渡す。Writerは最大16MiBのバッファを再利用し、満杯またはメタデータ終了時にGZip圧縮する。既定名は `stream0.bin`、`stream1.bin` …。全モデルの `List<byte>` や `ToArray()` は作らない。
 
-```text
-[Texture PNG 0]
-[Texture PNG 1]
-...
-[Material JSON 0]
-[Material JSON 1]
-...
-[Mesh JSON 0]
-[Mesh JSON 1]
-...
-```
+`stream.json` の `initial_data` がファイル順、圧縮前後のサイズ、SHA-256、リソース種別・インデックス・各オフセットを持つ。大きなTextureは複数ファイルに分割する。詳細と上限は [STREAM_FORMAT.md](STREAM_FORMAT.md#v5の初期データ) を参照。
 
-境界情報は `stream.json` の次の配列が保持する。
+### 3.3 初期データのデコード
 
-```text
-textures[]      <-> textureSizes[]
-materials[]     <-> materialSizes[]
-meshes[]        <-> meshSizes[]
-```
+1. `stream.json` のID表、GPU形式、サイズ、セグメントの連続性を検証する。
+2. Material／Meshを先に読み、Material JSONからShaderと必要なTextureを解決する。
+3. 分割ファイルを1つずつダウンロードする。DownloadHandlerのNativeArrayは、その所有者が生存している間だけ借りる。
+4. 圧縮ファイルのSHA-256を検証し、64KiBの再利用バッファでGZip展開する。
+5. 必要なTextureは、指定したGPU形式・幅・高さ・ミップ数・linearでTexture2Dを作る。展開したブロックをTextureのCPU領域へ直接コピーする。
+6. 全ミップのブロックが揃ったら `Apply(false, true)` する。PNGデコード、全Textureを再結合する配列、展開済み分割ファイル配列は不要。
+7. Material／Meshを生成し、時系列デコード用バッファを構築する。
 
-ID／Meshキー配列とサイズ配列、および連結順は必ず一致させる必要がある。概念上のoffsetは次のように計算できる。
-
-```text
-textureOffset(i) = sum(textureSizes[0 .. i-1])
-materialOffset(i) = sum(all textureSizes) + sum(materialSizes[0 .. i-1])
-meshOffset(i) = sum(all textureSizes) + sum(all materialSizes)
-              + sum(meshSizes[0 .. i-1])
-```
-
-最後に連結payload全体を1つの GZip ストリームへ圧縮し、`stream.bin` として送信する。
-
-### 3.3 `stream.bin` のデコード
-
-Receiverは次の順で復元する。
-
-1. `stream.json` を読み、名前配列、サイズ配列、量子化設定を取得する。
-2. `stream.bin` 全体をGZip展開する。
-3. Material JSONを先読みして使用するShaderと必要なTexture設定を解決する。`textureSizes` に従ってPNGを切り出し、必要なものだけを `Texture2D.LoadImage()` で復元し、linear／ミップ有無を反映する。
-4. `materialSizes` に従ってJSONを切り出し、Materialを生成して各プロパティを復元する。
-5. `meshSizes` に従ってJSONを切り出し、サブメッシュのインデックス、UV、マテリアル参照を持つMeshを作る。
-6. Meshごとの頂点数から、時系列デコード用の連続頂点バッファとMeshオフセットを構築する。
-
-次の不変条件が崩れると正しく復元できない。
-
-- ID／Meshキー配列とサイズ配列の要素数が同じであること。
-- 全サイズの合計がGZip展開後の長さと一致すること。
-- Materialが参照するTexture名が `textures[]` 内で一意であること。
-- `indices[]` が各Meshの `vertexCount` 範囲内であること。
+参照の欠落、ID重複、セグメントの隙間・重複、異なる共有Texture設定、ハッシュ・サイズ不一致、非対応GPU形式は拒否する。GPU非対応形式を自動でCPU展開する経路は用意しない。
 
 ## 4. `.stmv` のエンコード
 
@@ -431,14 +395,14 @@ keyframeStep = containerSize / (floor(packageSize / 2) * 32)
 - 1 Meshの頂点数: 最大65,536
 - keyframeの座標範囲: 各軸 `(-containerSize, +containerSize)`
 - Meshトポロジー、頂点数、Material構成は原則として記録中に固定
-- `stream.bin` と `.stmv` にはchecksumや暗号学的integrity検証がない
+- 初期データの分割ファイルはSHA-256を持つ。`.stmv` には暗号学的integrity検証がない
 - プロトコルv2のフレームPTSは記録開始からの相対時刻であり、UTC時刻ではない
 
 ## 7. 実装対応表
 
 | 処理 | 実装 |
 | --- | --- |
-| `stream.json` / `stream.bin` 生成 | `STMHttpSender.CreateInfos()` |
+| `stream.json` / `streamN.bin` 生成 | `STMHttpSender.CreateInfos()` |
 | metadata生成 | `STMHttpSerializer` / `InfoConverter` |
 | GZip圧縮・展開 | `Lib/ExternalTools.cs` |
 | キーフレームのGPUエンコード | `Resources/TilingShader.compute` |
@@ -458,4 +422,4 @@ keyframeStep = containerSize / (floor(packageSize / 2) * 32)
 
 Senderのアップロードは本体→配信リストの順にHTTP応答を待つコルーチンで実行する。通信待ちはメインスレッドをブロックしない。受信側のチャンク展開もworkerへ移動する。GPU dispatch、Meshへの描画反映、送信元BakeMesh、PCMコールバック処理自体は別に負荷が残るため、非同期化だけでフレーム時間を保証するものではない。
 
-Create ChannelのPNG生成は元TextureImporterを変更せず、GPU上の一時RenderTextureから読み出す。インポートや元テクスチャの圧縮設定変更は行わない。この初期化時のGPU読み出しとPNGエンコードは同期処理だが、通常録画中の毎フレーム処理ではない。
+Create ChannelのGPUブロック生成は元TextureImporterを変更せず、GPU上の一時RenderTextureから読み出す。インポートや元テクスチャの圧縮設定変更は行わない。この初期化時のGPU読み出しとブロック圧縮は同期処理だが、通常録画中の毎フレーム処理ではない。

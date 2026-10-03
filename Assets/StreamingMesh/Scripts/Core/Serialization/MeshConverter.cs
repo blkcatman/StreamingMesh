@@ -9,6 +9,12 @@ namespace StreamingMesh.Core.Serialization
     public static Mesh DeserializeFromBinary(byte[] data, int offsetBytes, int dataSize, int containerSize, out List<string> refMaterials, IDictionary<string, Material> materials = null)
     {
       MeshInfo meshInfo = InfoConverter.Deserialize<MeshInfo>(data, offsetBytes, dataSize);
+      return Deserialize(meshInfo, containerSize, out refMaterials, materials);
+    }
+
+    public static Mesh Deserialize(MeshInfo meshInfo, int containerSize, out List<string> refMaterials, IDictionary<string, Material> materials = null)
+    {
+      if (meshInfo == null) throw new System.IO.InvalidDataException("Missing mesh definition.");
 
       refMaterials = meshInfo.materialIds;
       if (refMaterials == null) throw new System.IO.InvalidDataException("Mesh material IDs are required.");

@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Networking;
 using System.Collections;
 using System.Collections.Generic;
 using System;
@@ -148,6 +149,8 @@ namespace StreamingMesh
     //StreamingRenderers
     StreamingMeshRenderer m_MeshRenderer = null;
     StreamingMeshRenderer m_InitializingMeshRenderer;
+    InitialResourceLoader m_InitialResourceLoader;
+    UnityWebRequest m_InitialResourceRequest;
     public bool IsInitializing { get; private set; }
     public string ConnectionStatus { get; private set; } = "Waiting to connect";
     string m_StreamPlayListName = ""; //"stream.stmj"
@@ -260,6 +263,10 @@ namespace StreamingMesh
     void ResetPlaybackData()
     {
       m_PlaybackGeneration++;
+      m_InitialResourceRequest?.Dispose();
+      m_InitialResourceRequest = null;
+      m_InitialResourceLoader?.Dispose();
+      m_InitialResourceLoader = null;
       m_InitializingMeshRenderer?.Dispose();
       m_InitializingMeshRenderer = null;
       if(m_MeshRenderer != null)
@@ -460,6 +467,11 @@ namespace StreamingMesh
         ConnectionStatus = "Unsupported channel format. Recreate the channel with the current Sender.";
         yield break;
       }
+      if (channelInfo.initial_data == null || channelInfo.initial_data.Count == 0)
+      {
+        ConnectionStatus = "Sender is uploading initial resources. Reconnect when the upload finishes.";
+        yield break;
+      }
       ValidateResourceTables(channelInfo);
 
       if(channelInfo != null)
@@ -477,33 +489,6 @@ namespace StreamingMesh
           m_UseFmp4Audio = m_Fmp4AudioPlayer != null &&
             m_Fmp4AudioPlayer.Initialize(m_ChannelAddress, channelInfo);
         }
-
-        //Get CombinedData
-        ConnectionStatus = "Downloading model and textures. Please wait...";
-        byte[] combinedData = null;
-        Exception initialDataError = null;
-        wrapper.RequestBinary(GetAbsoluteURL(channelInfo.data), bin => {
-          if(bin != null) {
-            try {
-              MemoryCheckpoint("initial/compressed",bin.Length);
-              combinedData = ExternalTools.DecompressExact(bin, 128 * 1024 * 1024);
-              MemoryCheckpoint("initial/decompressed",combinedData.Length);
-            }
-            catch (Exception error) { initialDataError = error; }
-          }
-        });
-        yield return new WaitUntil(wrapper.RequestFinished);
-
-        if(combinedData == null)
-        {
-          ConnectionStatus = initialDataError == null ? "Model download failed. Reconnect to retry." : "Invalid model data: " + initialDataError.Message;
-          yield break;
-        }
-        long expectedBytes = 0;
-        foreach (var size in channelInfo.textureSizes) expectedBytes += size;
-        foreach (var size in channelInfo.materialSizes) expectedBytes += size;
-        foreach (var size in channelInfo.meshSizes) expectedBytes += size;
-        if (combinedData.Length != expectedBytes) throw new InvalidDataException("Initial-data sizes do not match the payload.");
 
         StreamingMeshRenderer meshRenderer = new StreamingMeshRenderer
         {
@@ -531,137 +516,118 @@ namespace StreamingMesh
           m_AudioRenderer = audioRenderer;
 #endif
 
-        //Split Textures and Materials and Mesh from CombinedData
-        int offsetBytes = 0;
-
-        // Material records follow the texture payloads. Inspect them first so a
-        // fallback shader doesn't allocate large maps it never samples.
-        var textureIds = new HashSet<string>(channelInfo.textures, StringComparer.Ordinal);
-        var requiredTextures = new Dictionary<string, MaterialPropertyInfo>();
-        int requiredMaterialCount = 0;
-        int materialOffset = 0;
-        foreach (int size in channelInfo.textureSizes) materialOffset += size;
-        foreach (int size in channelInfo.materialSizes)
+        using (var loader = new InitialResourceLoader(channelInfo,
+          info => MaterialConverter.ResolveShader(info, m_CustomShaders, m_DefaultShader, m_MaterialTemplates, m_UseSenderShader),
+          meshRenderer.AddTexture))
         {
-          var info = InfoConverter.Deserialize<MaterialInfo>(combinedData, materialOffset, size);
-          if (info == null || info.properties == null || info.version != MaterialConverter.CurrentVersion || info.id != channelInfo.materials[requiredMaterialCount++])
-            throw new InvalidDataException("Material record does not match its ID table.");
-          Shader shader = MaterialConverter.ResolveShader(info, m_CustomShaders, m_DefaultShader,
-            m_MaterialTemplates, m_UseSenderShader);
-          foreach (var property in info.properties)
+          m_InitialResourceLoader = loader;
+          byte[] scratch = new byte[64 * 1024];
+          for (int partIndex = 0; partIndex < channelInfo.initial_data.Count; partIndex++)
           {
-            if (property == null || string.IsNullOrEmpty(property.name)) throw new InvalidDataException("Invalid material property.");
-            if (property.type == 4 && !string.IsNullOrEmpty(property.textureId) && !textureIds.Contains(property.textureId))
-              throw new InvalidDataException("Material references a missing texture ID.");
-            int index = shader.FindPropertyIndex(property.name);
-            if (property.type == 4 && !string.IsNullOrEmpty(property.textureId) && index >= 0 &&
-                shader.GetPropertyType(index) == UnityEngine.Rendering.ShaderPropertyType.Texture)
+            var part = channelInfo.initial_data[partIndex];
+            if (!loader.NeedsPart(part)) continue;
+            ConnectionStatus = $"Loading model resources {partIndex + 1}/{channelInfo.initial_data.Count}...";
+            using (var request = UnityWebRequest.Get(GetAbsoluteURL(part.file)))
             {
-              if (!ResourceIdentity.IsValid(property.textureId)) throw new InvalidDataException("Invalid texture resource ID.");
-              if (requiredTextures.TryGetValue(property.textureId, out var existing) &&
-                  (existing.textureLinear != property.textureLinear || existing.textureMipChain != property.textureMipChain ||
-                   existing.textureFilterMode != property.textureFilterMode || existing.textureWrapU != property.textureWrapU ||
-                   existing.textureWrapV != property.textureWrapV || existing.textureAnisoLevel != property.textureAnisoLevel ||
-                   existing.textureMipMapBias != property.textureMipMapBias))
-                throw new InvalidDataException("Conflicting settings for stream texture '" + property.value + "'.");
-              requiredTextures[property.textureId] = property;
+              m_InitialResourceRequest = request;
+              request.timeout = 60;
+              yield return request.SendWebRequest();
+              if (request.result != UnityWebRequest.Result.Success)
+              {
+                ConnectionStatus = "Initial resource download failed: " + part.file + ": " + request.error;
+                yield break;
+              }
+              Exception error = null;
+              try
+              {
+                MemoryCheckpoint("initial/part-before", part.compressedSize, part.file, meshRenderer);
+                using (var input = new NativeBufferStream(request.downloadHandler.nativeData))
+                  InitialDataParts.Read(part, input, scratch, loader.Consume);
+                MemoryCheckpoint("initial/part-after", part.size, part.file, meshRenderer);
+              }
+              catch (Exception failure) { error = failure; }
+              if (error != null)
+              {
+                ConnectionStatus = "Initial resource load failed: " + error.Message;
+                Debug.LogError(ConnectionStatus);
+                yield break;
+              }
             }
+            m_InitialResourceRequest = null;
+            yield return null;
           }
-          materialOffset += size;
-        }
+          scratch = null;
+          MemoryCheckpoint("initial/textures-ready", 0, "", meshRenderer);
 
-        //Split Textures
-        List<string> textureNames = channelInfo.textures;
-        List<int> textureSizes = channelInfo.textureSizes;
-        for(int i = 0; i < textureSizes.Count; i++)
-        {
-          ConnectionStatus = "Loading textures...";
-          int size = textureSizes[i];
-          string id = textureNames[i];
-          MemoryCheckpoint("texture/before",size,channelInfo.textureNames[i],meshRenderer);
-          Texture2D texture = requiredTextures.TryGetValue(id, out var settings)
-            ? TextureConverter.DeserializeFromBinary(combinedData, offsetBytes, size,
-                settings.hasTextureSettings && settings.textureLinear,
-                !settings.hasTextureSettings || settings.textureMipChain, m_LogMemoryDiagnostics) : null;
-          if(texture != null) {
-            texture.name = channelInfo.textureNames[i];
-            meshRenderer.AddTexture(id, texture);
-          }
-          MemoryCheckpoint("texture/after",size,channelInfo.textureNames[i],meshRenderer);
-          offsetBytes += size;
-          yield return null;
-        }
-        MemoryCheckpoint("initial/textures-ready",combinedData.Length,"",meshRenderer);
-
-        //Split Materials
-        List<string> materialNames = channelInfo.materials;
-        List<int> materialSizes = channelInfo.materialSizes;
-        for(int i = 0; i < materialSizes.Count; i++)
-        {
-          int size = materialSizes[i];
-          Material material = MaterialConverter.DeserializeFromBinary(
-            combinedData, offsetBytes, size, m_CustomShaders, m_DefaultShader, meshRenderer.TextureDictionary,
-            m_MaterialTemplates, m_UseSenderShader);
-          meshRenderer.AddMaterial(materialNames[i], material);
-          offsetBytes += size;
-          yield return null;
-        }
-
-        MemoryCheckpoint("initial/materials-ready",combinedData.Length,"",meshRenderer);
-        GameObject rootGameObject = new GameObject("RootGameObject");
-        m_StreamRoot = rootGameObject;
-        rootGameObject.transform.SetParent(transform, false);
-
-        //Split Meshes
-        List<string> meshNames = channelInfo.meshes;
-        List<int> meshSizes = channelInfo.meshSizes;
-        for(int i = 0; i < meshSizes.Count; i++)
-        {
-          string name = meshNames[i];
-          int size = meshSizes[i];
-          List<string> refMaterials = null;
-          Mesh mesh = MeshConverter.DeserializeFromBinary(
-            combinedData, offsetBytes, size, channelInfo.container_size, out refMaterials, meshRenderer.MaterialDictionary);
-
-          List<Material> materials = new List<Material>();
-          for(int j = 0; j < refMaterials.Count; j++)
+          //Split Materials
+          List<string> materialNames = channelInfo.materials;
+          List<int> materialSizes = channelInfo.materialSizes;
+          for(int i = 0; i < materialSizes.Count; i++)
           {
-            if (string.IsNullOrEmpty(refMaterials[j])) { materials.Add(null); continue; }
-            if (!ResourceIdentity.IsValid(refMaterials[j]) || !meshRenderer.MaterialDictionary.TryGetValue(refMaterials[j], out var material))
-              throw new InvalidDataException("Mesh references a missing material ID.");
-            materials.Add(material);
+            Material material = MaterialConverter.Deserialize(loader.Materials[i],
+              m_CustomShaders, m_DefaultShader, meshRenderer.TextureDictionary, m_MaterialTemplates, m_UseSenderShader);
+            loader.Materials[i] = null;
+            meshRenderer.AddMaterial(materialNames[i], material);
             yield return null;
           }
 
-          GameObject obj = new GameObject("Mesh_" + name);
-          obj.transform.SetParent(rootGameObject.transform, false);
-          MeshFilter meshFilter = obj.AddComponent<MeshFilter>();
-          MeshRenderer renderer = obj.AddComponent<MeshRenderer>();
+          MemoryCheckpoint("initial/materials-ready",0,"",meshRenderer);
+          GameObject rootGameObject = new GameObject("RootGameObject");
+          m_StreamRoot = rootGameObject;
+          rootGameObject.transform.SetParent(transform, false);
 
-          meshFilter.mesh = mesh;
-          renderer.sharedMaterials = materials.ToArray();
-          meshRenderer.AddMesh(name, mesh, refMaterials);
-          offsetBytes += size;
-          yield return null;
-        }
+          //Split Meshes
+          List<string> meshNames = channelInfo.meshes;
+          List<int> meshSizes = channelInfo.meshSizes;
+          for(int i = 0; i < meshSizes.Count; i++)
+          {
+            string name = meshNames[i];
+            List<string> refMaterials = null;
+            Mesh mesh = MeshConverter.Deserialize(loader.Meshes[i],
+              channelInfo.container_size, out refMaterials, meshRenderer.MaterialDictionary);
+            loader.Meshes[i] = null;
+            meshRenderer.AddMesh(name, mesh, refMaterials);
+
+            List<Material> materials = new List<Material>();
+            for(int j = 0; j < refMaterials.Count; j++)
+            {
+              if (string.IsNullOrEmpty(refMaterials[j])) { materials.Add(null); continue; }
+              if (!ResourceIdentity.IsValid(refMaterials[j]) || !meshRenderer.MaterialDictionary.TryGetValue(refMaterials[j], out var material))
+                throw new InvalidDataException("Mesh references a missing material ID.");
+              materials.Add(material);
+              yield return null;
+            }
+
+            GameObject obj = new GameObject("Mesh_" + name);
+            obj.transform.SetParent(rootGameObject.transform, false);
+            MeshFilter meshFilter = obj.AddComponent<MeshFilter>();
+            MeshRenderer renderer = obj.AddComponent<MeshRenderer>();
+
+            meshFilter.mesh = mesh;
+            renderer.sharedMaterials = materials.ToArray();
+            yield return null;
+          }
+
+        } // All resource streams and pending Texture CPU views are released.
+        m_InitialResourceLoader = null;
 
         //CreateVertexBuffer;
-        MemoryCheckpoint("buffers/cpu-before",combinedData.Length,"",meshRenderer);
+        MemoryCheckpoint("buffers/cpu-before",0,"",meshRenderer);
         meshRenderer.CreateVertexBuffer();
-        MemoryCheckpoint("buffers/cpu-after",combinedData.Length,"",meshRenderer);
+        MemoryCheckpoint("buffers/cpu-after",0,"",meshRenderer);
         meshRenderer.DecodeBackend = m_DecodeBackend;
         meshRenderer.NormalMode = m_NormalMode;
         meshRenderer.TangentMode = m_TangentMode;
         if (m_TangentMaterialIds != null)
           foreach (string materialName in m_TangentMaterialIds)
             if (!string.IsNullOrEmpty(materialName)) meshRenderer.TangentMaterialIds.Add(materialName.TrimEnd('\0'));
-        MemoryCheckpoint("buffers/gpu-before",combinedData.Length,"",meshRenderer);
+        MemoryCheckpoint("buffers/gpu-before",0,"",meshRenderer);
         meshRenderer.CreateVertexContainer(channelInfo.package_size, channelInfo.container_size);
-        MemoryCheckpoint("buffers/gpu-after",combinedData.Length,"",meshRenderer);
-        meshRenderer.RootGameObject = rootGameObject;
+        MemoryCheckpoint("buffers/gpu-after",0,"",meshRenderer);
+        meshRenderer.RootGameObject = m_StreamRoot;
         m_MeshRenderer = meshRenderer;
         m_InitializingMeshRenderer = null;
-        MemoryCheckpoint("initial/ready",combinedData.Length,"",meshRenderer);
+        MemoryCheckpoint("initial/ready",0,"",meshRenderer);
         ConnectionStatus = "Model ready / receiving stream";
         Debug.Log($"StreamingMesh ready: {channelInfo.meshes.Count} meshes, {meshRenderer.TextureDictionary.Count} textures.");
       }
@@ -673,6 +639,7 @@ namespace StreamingMesh
           info.materials == null || info.materialSizes == null || info.materials.Count != info.materialSizes.Count ||
           info.textures == null || info.textureSizes == null || info.textureNames == null ||
           info.textures.Count != info.textureSizes.Count || info.textures.Count != info.textureNames.Count ||
+          info.texturePayloads == null || info.texturePayloads.Count != info.textures.Count ||
           info.materials.Count > 4096 || info.textures.Count > 4096 || info.meshes.Count > 256)
         throw new InvalidDataException("Invalid initial-data resource tables.");
       var ids = new HashSet<string>(StringComparer.Ordinal);
@@ -681,10 +648,13 @@ namespace StreamingMesh
       foreach (var id in info.textures) if (!ResourceIdentity.IsValid(id) || !ids.Add(id)) throw new InvalidDataException("Invalid/duplicate texture ID.");
       ids.Clear();
       foreach (var id in info.meshes) if (string.IsNullOrEmpty(id) || !ids.Add(id)) throw new InvalidDataException("Invalid/duplicate mesh key.");
-      long bytes = 0;
-      foreach (var sizes in new[] { info.textureSizes, info.materialSizes, info.meshSizes })
-        foreach (int size in sizes) { if (size <= 0) throw new InvalidDataException("Invalid initial-data record size."); bytes += size; }
-      if (bytes > 128 * 1024 * 1024) throw new InvalidDataException("Initial-data memory budget exceeded.");
+      foreach (var sizes in new[] { info.materialSizes, info.meshSizes })
+        foreach (int size in sizes)
+          if (size <= 0 || size > InitialDataParts.MaximumPartBytes) throw new InvalidDataException("Invalid metadata size.");
+      for (int i = 0; i < info.texturePayloads.Count; i++)
+        if (info.texturePayloads[i] == null || info.texturePayloads[i].ByteCount() != info.textureSizes[i])
+          throw new InvalidDataException("Texture payload size mismatch.");
+      InitialDataParts.Validate(info.initial_data, info.materialSizes, info.meshSizes, info.textureSizes);
     }
 
     void SetUpdateSettings()

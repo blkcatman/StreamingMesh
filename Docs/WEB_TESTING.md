@@ -228,3 +228,45 @@ python Tools/Tests/summarize_texture_compression.py
 集計は `Logs/TextureCompression-summary.json`、ネイティブ結果は `Logs/TextureCompression-native-results.json`、Editorログは `Logs/TextureCompression-verification.log`。画面は `Logs/TextureCompression-WebGPU-matrix.png` と `Logs/TextureCompression-WebGPU-bc7-native.png`。出力ファイルは `Builds/TextureCompressionProbe/payload`、48×48の各形式は検証プロジェクトの `Assets/Resources/*.bytes` にある。検証コードはToolsだけに追加し、本番のSender／Receiverとstream.binのPNG形式は変更していない。
 
 KAGURA ID配信のPNGヘッダーを読み直すと8Kは5枚、2Kは15枚だったため、初期ロード診断節の枚数を訂正した。すべてをMipなしBC7へ置き換えるだけでも圧縮ブロックは合計380 MiBとなり、現在の初期データ展開上限128 MiBを超える。実装時は全Textureを単一stream.binへまとめる方式の見直し、個別リソースの配信、対応形式の選択とメタデータ（形式・寸法・Mip・sRGB等）の検証が必要。小さいfixtureで書き出せたことだけではETC2／ASTCの実機ロードやKAGURA全体のメモリ削減を保証しない。
+
+
+## v5：GPU圧縮Texture・GZip分割配信（2026-10-04）
+
+SenderのCreate Channelは、`textureFormat`でGPU形式を選び、Material／Mesh JSONを先に格納し、GPUブロックを展開後最大16MiBの`stream0.bin`、`stream1.bin` …へ書き出す。各ファイルはGZip Fastestで圧縮する。`stream.json`には形式・寸法・ミップ数・linear、各ファイルのサイズ・SHA-256とセグメント表を格納し、全ファイルの送信後に公開する。Receiverは64KiBの再利用バッファからTextureのCPU領域へ展開し、`Apply(false, true)`する。PNG LoadImageや全Textureの結合配列は使わない。
+
+検証はSource Editor 6000.6.3f1を閉じず、独立したUnity 6000.5.10f1／URP 17.5のプロジェクトで実施した。SourceプロジェクトのURP 17.6設定は変更せず、検証プロジェクトには17.5の既定Global Settingsを新規作成した。KAGURAはFBX単体とPrefabでMaterial割り当てが異なるため、収録と同じPrefabからSenderのSerializer／InitialResourceExporterを使って初期データを再生成した。Meshの順序・頂点数・indices、9 Material／20 TextureのIDの一致を検証し、既存の29頂点チャンク・8628フレームと29音声セグメントを再利用した。動作の再収録はしていない。
+
+| 項目 | 結果 |
+| --- | ---: |
+| TextureのGPUブロック（BC7、ミップなし） | 398,458,880 B（380 MiB） |
+| メタデータを含む初期データ | 400,455,951 B |
+| GZip付き分割ファイル | 25ファイル、合計23,543,553 B（22.45 MiB） |
+| Native復元 | 20 TextureすべてBC7、CPU画素非保持 |
+| Nativeでの元Materialとの描画差 | RGB平均0.000562／255、差3超の画素2個 |
+| WebGPU復元 | 13 Mesh／20 Texture、BC7のまま、ミップ1 |
+| WebGPU全尺再生 | 音声287.585705秒、エラー／OOM 0 |
+| 初期化完了時WASM容量／使用量 | 175.5／89.4 MiB |
+| 全尺再生中WASM容量最大 | 364.0 MiB |
+| 全尺再生中WASM使用量最大 | 304.9 MiB |
+| 管理ヒープ容量最大／使用量最大 | 210.6／146.0 MiB |
+
+過去の同環境・同収録・診断有効のPNG経路では、容量最大1025.6MiB、使用量最大408.4MiBだった。今回の初回全尺再生の観測値は容量64.5%、使用量25.3%減。ビルドとGCタイミングの差を含む比較で、GPUメモリやブラウザ全体の使用量を意味しない。GPUブロックをさらにGZipで圧縮してもGPU上では380MiBが必要。元ファイル直接変換のBody_Base単体BC7は64MiB→約12.4MiBだったが、今回のSourceインポートTextureからの再圧縮は別入力であり、圧縮率を混同しない。
+
+WASM容量は一度拡張すると縮まらない。追加の再接続テストでは容量524.2MiBまで再拡張したため、364MiBは初回全尺再生の値として扱う。再接続時のGC・アロケーターの再利用／断片化を含む保持容量の内訳は未分離。大きな配列を全く確保しないという意味ではなく、Textureのアップロード用CPU領域、HTTP受信領域、既存のチャンクプールは必要である。初期リソース5/25の読み込み中にDisconnectし、エラーなしで中断したことも確認した。
+
+Windows Editorの本番Exporterで7形式×sRGB／Linearの14ケースを再検証。BC7／DXT1／DXT5はD3D11の描画比較も通過し、ETC2／ASTCは書き出し成功・今回のGPUでは非対応。BC7の32×16・6ミップ・720バイトの復元も通過。対応モバイルGPU、WebGL 2での圧縮Texture実描画は未検証。初期データの172項目と、HTTPサーバーの完成目録公開・欠落／改変ファイル拒否・並行公開テストも通過した。Windowsの一時的なファイル置換／オープン競合は、完全な旧ファイルを保持したまま短く再試行する。
+
+SenderのCreateChannelからHTTP送信までを通す追加Unityテストは、自動承認レビューが起動操作を拒否したため未実行。Senderが共用する書き出しパイプライン、実ファイルからのNative／WebGPU読み込み、サーバーの公開APIはそれぞれ検証済みだが、その一連のHTTP経路を通した成功とは区別する。
+
+```powershell
+./Tools/Tests/verify_indexed_resources.ps1 -EditorPath 'C:/Program Files/Unity/Hub/Editor/6000.5.10f1/Editor/Unity.exe'
+dotnet run --project Tools/Tests/InitialDataPartsTests.csproj
+python -m unittest discover -s Tools/Tests -p 'test_server*.py'
+python Tools/Tests/verify_resource_capture.py DevData/channels/channel_KAGURA_INDEX
+python Tools/Tests/instrument_web_receiver.py Builds/IndexedReceiver/index.html --trace-growth
+python Tools/streamingmesh_dev_server.py --port 8002 --web-root Builds/IndexedReceiver
+```
+
+`http://127.0.0.1:8002/viewer/?channel=http%3A%2F%2F127.0.0.1%3A8002%2Fchannels%2Fchannel_KAGURA_INDEX%2F` を開く。音声の自動再生が保留された場合は画面をクリックし、DOMのaudio.currentTimeとReceiver表示時間が進むことを確認する。容量／使用量はチェックポイント・拡張イベント・2秒間隔メトリクスの最大値であり、瞬間的な使用量の全ピークを保証しない。
+
+実データは`DevData/channels/channel_KAGURA_INDEX`、ビルドは`Builds/IndexedReceiver`。記録は`Logs/IndexedResources-export-native.log`、`IndexedResources-encoders.log`、`IndexedResources-capture-summary.json`、`IndexedResources-WebGPU-summary.json`、`IndexedResources-WebGPU-merged-console.json`、`IndexedResources-WebGPU-metrics.json`、`IndexedResources-WebGPU-reconnect-console.json`。終端画面は`Logs/IndexedResources-WebGPU.png`。

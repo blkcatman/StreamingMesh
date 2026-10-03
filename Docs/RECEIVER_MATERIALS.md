@@ -1,6 +1,6 @@
 # Receiverのマテリアル復元
 
-SenderのCreate Channelで、各Materialのプロパティ名と値を `stream.bin` に保存する。Receiverは同じ名前のプロパティへ値を設定する。`type` の0〜5は値の種類を表し、Shader内のプロパティの並び順やインデックスではない。
+SenderのCreate Channelで、各Materialのプロパティ名と値を 初期データの分割ファイル に保存する。Receiverは同じ名前のプロパティへ値を設定する。`type` の0〜5は値の種類を表し、Shader内のプロパティの並び順やインデックスではない。
 
 ## KAGURAでの確認手順
 
@@ -8,11 +8,11 @@ SenderのCreate Channelで、各Materialのプロパティ名と値を `stream.b
 
 1. 受信中ならDisconnectし、Senderの録画を停止する。
 2. KaguraDemoのマテリアルを設定する。
-3. 更新したSenderで **Create Channel** を実行し、`stream.bin` の送信完了を待つ。
+3. 更新したSenderで **Create Channel** を実行し、初期データの分割ファイル の送信完了を待つ。
 4. **Record from start** で録画を開始する。
 5. KaguraReceiverで **Connect / Reconnect** する。端末では更新したシーンを再ビルドする。
 
-マテリアルはチャンネル作成時のスナップショットであり、録画中の変更は毎フレーム送信しない。設定を変えて比較する場合はこの手順を繰り返す。チャンネル形式はv4、MaterialInfoはv3。旧形式のチャンネル／MaterialInfoは拒否するため、更新したSenderで作り直す必要がある。不正な数値も拒否する。
+マテリアルはチャンネル作成時のスナップショットであり、録画中の変更は毎フレーム送信しない。設定を変えて比較する場合はこの手順を繰り返す。チャンネル形式はv5、MaterialInfoはv3。旧形式のチャンネル／MaterialInfoは拒否するため、更新したSenderで作り直す必要がある。不正な数値も拒否する。
 
 ## Receiver設定
 
@@ -30,7 +30,7 @@ Shaderコード自体は送信しない。Receiverのプロジェクト／ビル
 
 ## リソースIDとMaterialInfo version 3
 
-Meshフレームヘッダー（v2）と音声形式、`stream.bin` の連結順序は維持する。チャンネルのメタデータはv4へ更新し、Material JSONには `version: 3` と次の情報を格納する。
+Meshフレームヘッダー（v2）と音声形式を維持し、初期データはv5の分割ファイルへ変更する。Material JSONには `version: 3` と次の情報を格納する。
 
 IDは `SHA256("asset\0" + 種類 + "\0" + パス + "\0" + localFileId)` の小文字16進64文字。パスは `Assets/...` または `Packages/...` のプロジェクト相対パスで、区切り文字を `/` に統一する。大文字・小文字は保持する。主アセットのlocalFileIdは0、FBX等のサブアセットはUnityのlocalFileIdを使う。これは同一リソースの識別であり、同じ画像内容の別ファイルをまとめるものではない。移動・改名するとIDが変わる。
 
@@ -45,9 +45,9 @@ IDは `SHA256("asset\0" + 種類 + "\0" + パス + "\0" + localFileId)` の小�
 - Textureのscale/offset、linear/sRGB、ミップ有無、filterMode、wrap U/V、anisoLevel、mipMapBias。空の `textureId` は明示的な未設定として復元する。
 - RenderType、IgnoreProjector、IgnoreProjection、DisableBatching、ForceNoShadowCastingの有効タグ値。Shaderに存在するPass名とLightModeの有効／無効状態。
 
-ReceiverはID単位でMaterial／Textureを共有し、使用するShaderが参照するTextureだけを展開する。同じIDのlinear／ミップ／サンプラー設定の矛盾、重複ID、不足した参照を拒否する。初期データのサイズ表とGZip展開サイズの一致を検査し、展開には最大128 MiBの1本の配列を使う。拡張するMemoryStreamとToArrayの二重配列を作らず、Material／Mesh JSONも元配列の範囲から直接読む。
+ReceiverはID単位でMaterial／Textureを共有し、使用するShaderが参照するTextureだけを展開する。同じIDのlinear／ミップ／サンプラー設定の矛盾、重複ID、不足した参照を拒否する。初期データのサイズ・セグメント表と圧縮ファイルのSHA-256を検証する。GZip展開は64KiBの再利用バッファからTextureのCPU領域へ直接コピーする。全モデルや分割ファイルの展開済み配列は作らない。Material／Mesh JSONは個別の小さい配列へ復元する。
 
-PNGはEditorでGPU Blitして生成し、元アセットを再インポートしない。NormalMapとしてインポートされたTextureは、プラットフォームのチャンネル配置から法線XYZを復元してRGBへ保存する。ReceiverはRGBA32として読み込み、linear設定とミップ有無を反映する。圧縮形式・圧縮による品質・独自ミップ内容は引き継がない。
+TextureはEditorでGPU Blitして正規化し、選択したBC7／DXT／ETC2／ASTC形式へ圧縮する。元アセットは再インポートしない。NormalMapはインポート時のチャンネル配置から法線XYZを復元してRGBへ保存する。Receiverは対応する圧縮形式へ直接読み込み、linearとミップ数を反映する。元の独自ミップ画像は再生成される。
 
 対象はShaderのPropertiesに宣言された値と2D Texture。MaterialPropertyBlock、毎フレームのマテリアル変更、グローバルShader値、配列／行列／バッファ、Cubemap・TextureArray、列挙対象外の独自タグは送信対象外。照明・カメラ・ポスト処理はReceiverシーン側の設定を使う。送信元で編集された法線・接線も送信せず受信形状から再計算するため、実際の配信では元の描画と差が生じる場合がある。
 

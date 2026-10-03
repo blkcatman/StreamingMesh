@@ -463,6 +463,13 @@ namespace StreamingMesh
 
     void OnChannelInfoReceived(string name, ChannelInfo info)
     {
+      // Protocol v5 uses indexed resource parts instead of the legacy stream.bin.
+      if (info.protocol_version >= 5)
+      {
+        Debug.LogError("STMHttpMeshReceiver does not support this channel format. Use StreamingMesh.Receiver for protocol v5 or later.");
+        return;
+      }
+
       m_containerSize = info.container_size;
       //m_packageSize = info.package_size;
       m_frameInterval = info.frame_interval;
@@ -486,7 +493,8 @@ namespace StreamingMesh
       m_materialNames = info.materials;
       m_textureNames = info.textures;
 
-      m_combinedDataURL = info.data;
+      // Matches STMHttpSerializer.Send(byte[]); ChannelInfo no longer has data.
+      m_combinedDataURL = "stream.bin";
       Invoke("TryRequestCombinedData",0.1f);
 
       m_streamRefreshInterval = 1.0f;

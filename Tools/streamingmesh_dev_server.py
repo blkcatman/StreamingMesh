@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import hashlib
 import mimetypes
 import os
 import re
 import secrets
 import tempfile
 import threading
+import time
 from datetime import datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -173,13 +175,21 @@ class Handler(BaseHTTPRequestHandler):
             info_path = root / "stream.json"
             try:
                 info = json.loads(info_path.read_text(encoding="utf-8"))
-                data_name = info.get("data", "")
-                data_path = self._safe_path(self.server.data_root, f"{root.name}/{data_name}")
-                if not data_path.is_file():
-                    continue
+                if info.get("protocol_version") == 5:
+                    parts = info.get("initial_data")
+                    if not parts:
+                        continue
+                    data_paths = [self._safe_path(root, part["file"]) for part in parts]
+                    if any(not path.is_file() or path.stat().st_size != part["compressedSize"]
+                           for path, part in zip(data_paths, parts)):
+                        continue
+                else:
+                    data_paths = [self._safe_path(root, info.get("data", ""))]
+                    if not data_paths[0].is_file():
+                        continue
                 interval = float(info.get("frame_interval", 0))
                 fps = f"{1.0 / interval:.2f}".rstrip("0").rstrip(".") if interval > 0 else "?"
-                update_candidates = [info_path, data_path]
+                update_candidates = [info_path, *data_paths]
                 for playlist_name in (info.get("stream_info"), info.get("audio_info")):
                     if playlist_name:
                         playlist_path = self._safe_path(
@@ -188,7 +198,7 @@ class Handler(BaseHTTPRequestHandler):
                         if playlist_path.is_file():
                             update_candidates.append(playlist_path)
                 updated = max(path.stat().st_mtime for path in update_candidates)
-            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
                 continue
 
             channels.append(
@@ -233,7 +243,11 @@ class Handler(BaseHTTPRequestHandler):
         channel_root = (self.server.data_root / channel).resolve()
         channel_root.mkdir(parents=True, exist_ok=True)
         try:
-            if "combined" in query:
+            if "initialinfo" in query:
+                if query["initialinfo"] != ["stream.json"]:
+                    raise ValueError("Initial manifest must be stream.json")
+                self._publish_initial_data(channel_root, body)
+            elif "combined" in query:
                 self._write_file(channel_root, query["combined"][0], body)
             elif "stream" in query:
                 self._write_file(channel_root, query["stream"][0], body)
@@ -253,6 +267,34 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json({"ok": True})
+
+    def _publish_initial_data(self, root: Path, body: bytes) -> None:
+        """Commit a v5 manifest only after all named, hashed parts exist."""
+        try:
+            info = json.loads(body)
+            parts = info["initial_data"]
+            if info["protocol_version"] != 5 or not isinstance(parts, list) or not 1 <= len(parts) <= 4096:
+                raise ValueError("Invalid initial manifest")
+            names = set()
+            for part in parts:
+                name = part["file"]
+                if not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,91}\.bin", name) or name.lower() in names:
+                    raise ValueError("Invalid or duplicate initial filename")
+                names.add(name.lower())
+                if not 0 < part["size"] <= 16 * 1024 * 1024 or not 0 < part["compressedSize"] <= 16 * 1024 * 1024 + 65536:
+                    raise ValueError("Invalid initial part size")
+                path = self._safe_path(root, name)
+                with path.open("rb") as source:
+                    if os.fstat(source.fileno()).st_size != part["compressedSize"]:
+                        raise ValueError("Missing or incomplete initial part: " + name)
+                    digest = hashlib.sha256()
+                    while block := source.read(65536):
+                        digest.update(block)
+                if digest.hexdigest() != part["sha256"]:
+                    raise ValueError("Changed initial part: " + name)
+        except (OSError, KeyError, TypeError, json.JSONDecodeError) as error:
+            raise ValueError("Invalid/missing initial resources") from error
+        self._atomic_write(root / "stream.json", body)
 
     def _create_channel(self, channel: str, root: Path, body: bytes) -> None:
         token = secrets.token_urlsafe(24)
@@ -320,11 +362,17 @@ class Handler(BaseHTTPRequestHandler):
             content_type = "audio/mp4"
         # Open first, then obtain the length from that same inode. An atomic
         # publisher may replace the path while this response is being sent.
-        try:
-            source = target.open("rb")
-        except FileNotFoundError:
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
+        for attempt in range(100):
+            try:
+                source = target.open("rb")
+                break
+            except FileNotFoundError:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            except PermissionError:
+                if os.name != "nt" or attempt == 99:
+                    raise
+                time.sleep(0.05)
         with source:
             remaining = os.fstat(source.fileno()).st_size
             self.send_response(HTTPStatus.OK)
@@ -345,7 +393,16 @@ class Handler(BaseHTTPRequestHandler):
         try:
             with os.fdopen(descriptor, "wb") as output:
                 output.write(body)
-            os.replace(temporary, target)
+            # Windows readers can temporarily deny replacement. Keep the old
+            # complete file visible and retry; never truncate it in place.
+            for attempt in range(100):
+                try:
+                    os.replace(temporary, target)
+                    break
+                except PermissionError:
+                    if os.name != "nt" or attempt == 99:
+                        raise
+                    time.sleep(0.05)
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)

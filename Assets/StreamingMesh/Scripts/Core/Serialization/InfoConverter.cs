@@ -42,7 +42,7 @@ namespace StreamingMesh.Core.Serialization
   [Serializable]
   public class ChannelInfo : BaseInfo
   {
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
     public int protocol_version;
     public long timebase_hz;
     public int container_size;
@@ -56,7 +56,8 @@ namespace StreamingMesh.Core.Serialization
     public List<int> meshSizes;
     public List<int> materialSizes;
     public List<int> textureSizes;
-    public string data;
+    public List<TexturePayloadInfo> texturePayloads;
+    public List<InitialDataPart> initial_data;
     public string stream_info;
     public string audio_info;
     public string audio_clip;

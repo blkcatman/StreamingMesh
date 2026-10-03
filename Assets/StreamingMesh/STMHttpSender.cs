@@ -129,6 +129,8 @@ namespace StreamingMesh
 
     [Header("Source")]
     public GameObject targetGameObject;
+    [Tooltip("Select a GPU block format supported by the target Receiver. BC7 targets desktop GPUs; ASTC/ETC2 require compatible devices. DXT1 and ETC2_RGB discard alpha.")]
+    public GpuTextureFormat textureFormat = GpuTextureFormat.BC7;
 
     [Header("Stream encoding")]
     [Min(1)] public int containerSize = 4;
@@ -482,42 +484,18 @@ namespace StreamingMesh
         }
       }
 
-      List<int> meshBufferSizes = new List<int>();
-      List<int> materialBufferSizes = new List<int>();
-      List<int> textureBufferSizes = new List<int>();
-      List<byte> combinedBuffer = new List<byte>();
-
-      foreach (KeyValuePair<string, Texture> texturePair in textures)
-      {
-        byte[] buffer = STMHttpSerializer.GetTextureToPNGByteArray(texturePair.Value, true);
-        if (buffer == null)
-          buffer = new byte[0];
-        textureBufferSizes.Add(buffer.Length);
-        combinedBuffer.AddRange(buffer);
-      }
-
-      for (int i = 0; i < materialInfos.Count; i++)
-      {
-        byte[] buffer = Encoding.UTF8.GetBytes(JsonUtility.ToJson(materialInfos[i]));
-        materialBufferSizes.Add(buffer.Length);
-        combinedBuffer.AddRange(buffer);
-      }
-
-      for (int i = 0; i < meshInfos.Count; i++)
-      {
-        byte[] buffer = Encoding.UTF8.GetBytes(JsonUtility.ToJson(meshInfos[i]));
-        meshBufferSizes.Add(buffer.Length);
-        combinedBuffer.AddRange(buffer);
-      }
-
       ChannelInfo channelInfo = serializer.CreateChannelInfo(
         containerSize, packageSize, FrameInterval, combinedFrames,
         meshNames, materialNames, textureNames,
-        meshBufferSizes, materialBufferSizes, textureBufferSizes,
+        new List<int>(), new List<int>(), new List<int>(),
         textureDisplayNames);
-
+      // Provision with an empty manifest; publish the complete manifest last.
       serializer.Send(channelInfo);
-      serializer.Send(Lib.ExternalTools.Compress(combinedBuffer.ToArray()));
+      var textureList = new List<Texture>();
+      foreach (string id in textureNames) textureList.Add(textures[id]);
+      InitialResourceExporter.Export(channelInfo, materialInfos, meshInfos, textureList, textureFormat,
+        (part, bytes) => serializer.Send(bytes, "combined", part.file));
+      serializer.PublishInitialData(channelInfo);
 #endif
     }
 

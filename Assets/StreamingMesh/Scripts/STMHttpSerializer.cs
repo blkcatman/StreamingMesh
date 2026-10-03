@@ -47,7 +47,7 @@ namespace StreamingMesh {
 				meshSizes = meshSizes,
 				materialSizes = materialSizes,
 				textureSizes = textureSizes,
-				data = "stream.bin",
+                initial_data = new List<InitialDataPart>(),
 				stream_info = "stream.stmj",
 				audio_info = "stream.stma",
 				audio_format = "fmp4",
@@ -308,6 +308,10 @@ namespace StreamingMesh {
 			string json = JsonUtility.ToJson(channelInfo);
 			base.Send("channel=" + base.channel, json, false);
 		}
+
+        public void PublishInitialData(ChannelInfo channelInfo) {
+            base.Send("initialinfo=stream.json", JsonUtility.ToJson(channelInfo), true, true);
+        }
 
     /*
 		public void Send(MeshInfo meshInfo, int index) {
