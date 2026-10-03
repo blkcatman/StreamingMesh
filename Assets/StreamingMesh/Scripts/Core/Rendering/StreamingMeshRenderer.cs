@@ -63,6 +63,18 @@ namespace StreamingMesh.Core.Rendering
     public long GpuModelBytes { get { return m_GpuPipeline == null ? 0 : m_GpuPipeline.ModelBytes; } }
     public long GpuTangentBytes { get { return m_GpuPipeline == null ? 0 : m_GpuPipeline.TangentBytes; } }
 
+    public bool LogMemoryDiagnostics { get; set; }
+    public string MemoryDiagnosticsDetails()
+    {
+      long capacity=0, payload=0, peakPayload=0; int leases=0, peakLeases=0, slots=0;
+      m_ChunkPool?.GetUsage(out capacity,out payload,out peakPayload,out leases,out peakLeases,out slots);
+      long cpuBytes=0;
+      if (m_VertexLayout != null) foreach (var a in m_VertexLayout) cpuBytes += (long)a.Length*4;
+      if (m_InterpolatedVertices != null) foreach (var a in m_InterpolatedVertices) cpuBytes += (long)a.Length*12;
+      if (m_DecodedPool != null) foreach (var f in m_DecodedPool) if (f.vertices != null) foreach (var a in f.vertices) cpuBytes += (long)a.Length*4;
+      return $"chunkCapacity={capacity} chunkPayload={payload} chunkPeakPayload={peakPayload} chunkLeases={leases} chunkPeakLeases={peakLeases} chunkSlots={slots} encodedFrames={EncodedFrameCount} encodedCapacity={(m_EncodedFrames == null ? 0 : m_EncodedFrames.Capacity)} decodedFrames={BufferedFrameCount} decodedCapacity={(m_DecodedPool == null ? 0 : m_DecodedPool.Length)} cpuArrayBytes={cpuBytes} gpuBufferBytes={GpuPoolBytes} gpuModelBytes={GpuModelBytes} gpuUploadArrayBytes={(m_GpuPipeline == null ? 0 : m_GpuPipeline.UploadArrayBytes)} gpuMaxInputBytes={(m_GpuPipeline == null ? 0 : m_GpuPipeline.MaximumObservedInputBytes)} gpuPeakSlots={(m_GpuPipeline == null ? 0 : m_GpuPipeline.PeakHeldSlots)}";
+    }
+
     public long EncodedPoolBytes => m_ChunkPool == null ? 0 : m_ChunkPool.AllocatedBytes;
 
     int m_ContainerSize = 4;
@@ -192,7 +204,8 @@ namespace StreamingMesh.Core.Rendering
         try
         {
           m_GpuPipeline = new GpuVertexPipeline(m_MeshList, packageSize, containerSize,
-            m_MaxDecodedFrames + 8, m_RecalculateNormals, m_RecalculateTangents);
+            m_MaxDecodedFrames + 8, m_RecalculateNormals, m_RecalculateTangents,
+            memoryDiagnostics: LogMemoryDiagnostics);
           m_MaxDecodedFrames = Math.Min(m_MaxDecodedFrames, Math.Max(3, m_GpuPipeline.Capacity - 2));
           Debug.Log("StreamingMesh GPU resident receiver: " + m_GpuPipeline.Capacity +
             " slots, " + m_GpuPipeline.PoolBytes + " pool bytes, " + m_GpuPipeline.ModelBytes +
@@ -375,12 +388,15 @@ namespace StreamingMesh.Core.Rendering
       try
       {
 #if UNITY_WEBGL && !UNITY_EDITOR
+        if (LogMemoryDiagnostics) ReceiverMemoryDiagnostics.Log("chunk/before-parse",data.Length,index.ToString(),this);
         lock (m_ImportGate) chunk = pool.Parse(index, data, ticks, combined, interval);
+        if (LogMemoryDiagnostics) ReceiverMemoryDiagnostics.Log("chunk/after-parse",chunk.bytes.Length,index.ToString(),this);
 #else
         chunk = await Task.Run(() => { lock (m_ImportGate) return pool.Parse(index, data, ticks, combined, interval); });
 #endif
         if (m_PlaybackState == StreamingPlaybackState.Disposed) return false;
         CommitChunk(chunk); chunk = null;
+        if (LogMemoryDiagnostics) ReceiverMemoryDiagnostics.Log("chunk/committed",data.Length,index.ToString(),this);
         return true;
       }
       catch (Exception exception) { RejectChunk(index, exception); return false; }

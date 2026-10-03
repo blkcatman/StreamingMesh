@@ -73,13 +73,19 @@ namespace StreamingMesh.Core.Rendering
       public readonly EncodedFrameSlice[] frames;
       public int count, retained, index;
       internal bool leased;
+      internal int payloadBytes;
       internal Chunk(int framesPerChunk) { frames = new EncodedFrameSlice[framesPerChunk]; }
     }
     readonly object gate = new object();
     readonly Chunk[] chunks;
     readonly int maxChunkBytes, maxFrameBytes;
     readonly long budget;
-    long allocated;
+    long allocated, leasedPayload, peakLeasedPayload;
+    int leasedSlots, peakLeasedSlots;
+    public void GetUsage(out long capacity, out long payload, out long peakPayload, out int leases, out int peakLeases, out int slots)
+    {
+      lock (gate) { capacity=allocated; payload=leasedPayload; peakPayload=peakLeasedPayload; leases=leasedSlots; peakLeases=peakLeasedSlots; slots=chunks.Length; }
+    }
     bool disposed;
     public long AllocatedBytes { get { lock (gate) return allocated; } }
     public bool HasFreeChunk
@@ -118,6 +124,8 @@ namespace StreamingMesh.Core.Rendering
           candidate.bytes = new byte[capacity];
           allocated += capacity - oldSize;
         }
+        candidate.payloadBytes = size; leasedPayload += size; leasedSlots++;
+        peakLeasedPayload = Math.Max(peakLeasedPayload, leasedPayload); peakLeasedSlots = Math.Max(peakLeasedSlots, leasedSlots);
         candidate.leased = true; candidate.count = 0; candidate.retained = 0;
         return candidate;
       }
@@ -126,6 +134,8 @@ namespace StreamingMesh.Core.Rendering
     {
       lock (gate)
       {
+        if (!chunk.leased) return;
+        leasedPayload -= chunk.payloadBytes; leasedSlots--; chunk.payloadBytes = 0;
         Array.Clear(chunk.frames, 0, chunk.count);
         chunk.count = 0; chunk.retained = 0; chunk.leased = false;
         if (disposed && chunk.bytes != null) { allocated -= chunk.bytes.Length; chunk.bytes = null; }

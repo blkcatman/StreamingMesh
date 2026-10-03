@@ -87,8 +87,12 @@ namespace StreamingMesh.Core.Rendering
     int m_KeyKernel, m_DeltaKernel, m_CopyKernel, m_PresentKernel, m_FaceKernel, m_NormalKernel;
     int m_FaceTangentKernel, m_VertexTangentKernel;
     bool m_HasKeyframe, m_Disposed;
+    readonly bool m_MemoryDiagnostics;
     Bounds m_Bounds;
     public int Capacity { get { return m_Frames.Count; } }
+    public long UploadArrayBytes { get; private set; }
+    public int MaximumObservedInputBytes { get; private set; }
+    public int PeakHeldSlots { get; private set; }
     public long PoolBytes { get; private set; }
     public long ModelBytes { get; private set; }
     public long TangentBytes { get; private set; }
@@ -100,8 +104,9 @@ namespace StreamingMesh.Core.Rendering
 
     public GpuVertexPipeline(IList<Mesh> meshes, int packageSize, int containerSize,
       int requestedSlots, bool[] recalculateNormals, bool[] recalculateTangents,
-      long poolBudgetBytes = 64L * 1024 * 1024)
+      long poolBudgetBytes = 64L * 1024 * 1024, bool memoryDiagnostics = false)
     {
+      m_MemoryDiagnostics = memoryDiagnostics;
       if (recalculateNormals == null || recalculateTangents == null ||
           recalculateNormals.Length != meshes.Count || recalculateTangents.Length != meshes.Count)
         throw new ArgumentException("Vertex requirements must match the mesh count.");
@@ -166,6 +171,7 @@ namespace StreamingMesh.Core.Rendering
           frame.tiles = new ComputeBuffer(m_Count, 16);
           frame.vertices = new ComputeBuffer(m_Count, 16);
           frame.upload = new uint[words];
+          UploadArrayBytes += (long)words * 4;
         }
         PoolBytes = bytesPerSlot * slots;
         for (int i=0; i<meshes.Count; i++)
@@ -286,6 +292,12 @@ namespace StreamingMesh.Core.Rendering
         if(!candidate.held && (!candidate.submitted || candidate.IsReady)) {frame=candidate;break;}
       if(frame==null) return false;
       if(!Validate(source, out var bounds, out error)) {frame=null; m_HasKeyframe=false; return false;}
+      if (m_MemoryDiagnostics)
+      {
+        MaximumObservedInputBytes = Math.Max(MaximumObservedInputBytes,source.Count);
+        int heldSlots=1; foreach (var slot in m_Frames) if (slot.held && slot != frame) heldSlots++;
+        PeakHeldSlots = Math.Max(PeakHeldSlots,heldSlots);
+      }
       int words=(source.Count+3)/4;
 #if UNITY_WEBGL && !UNITY_EDITOR
       frame.readbackDone=false; frame.readbackFailed=false;

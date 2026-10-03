@@ -137,6 +137,14 @@ namespace StreamingMesh
     }
 #endif
 
+    [SerializeField, Tooltip("Log allocating memory diagnostics during initialization and every two seconds of playback.")]
+    bool m_LogMemoryDiagnostics;
+    double m_NextMemoryLog;
+    void MemoryCheckpoint(string stage, long bytes=0, string detail="", StreamingMeshRenderer renderer=null)
+    {
+      if (m_LogMemoryDiagnostics) ReceiverMemoryDiagnostics.Log(stage,bytes,detail,renderer);
+    }
+
     //StreamingRenderers
     StreamingMeshRenderer m_MeshRenderer = null;
     StreamingMeshRenderer m_InitializingMeshRenderer;
@@ -225,6 +233,7 @@ namespace StreamingMesh
     IEnumerator InitializePlayback()
     {
       IsInitializing = true;
+      MemoryCheckpoint("initial/start");
       try { yield return CreateInitialData(); }
       finally
       {
@@ -294,6 +303,11 @@ namespace StreamingMesh
 
     void Update()
     {
+      if (m_LogMemoryDiagnostics && !IsInitializing && Time.realtimeSinceStartupAsDouble >= m_NextMemoryLog)
+      {
+        m_NextMemoryLog = Time.realtimeSinceStartupAsDouble + 2;
+        MemoryCheckpoint("playback/sample",0,"",m_MeshRenderer ?? m_InitializingMeshRenderer);
+      }
       //If initial data is not loaded, skip update
       if(m_MeshRenderer == null) return;
       m_StatsFrames++;
@@ -470,7 +484,11 @@ namespace StreamingMesh
         Exception initialDataError = null;
         wrapper.RequestBinary(GetAbsoluteURL(channelInfo.data), bin => {
           if(bin != null) {
-            try { combinedData = ExternalTools.DecompressExact(bin, 128 * 1024 * 1024); }
+            try {
+              MemoryCheckpoint("initial/compressed",bin.Length);
+              combinedData = ExternalTools.DecompressExact(bin, 128 * 1024 * 1024);
+              MemoryCheckpoint("initial/decompressed",combinedData.Length);
+            }
             catch (Exception error) { initialDataError = error; }
           }
         });
@@ -492,7 +510,8 @@ namespace StreamingMesh
           ContainerSize = channelInfo.container_size,
           PackageSize = channelInfo.package_size,
           FrameInterval = channelInfo.frame_interval,
-          CombinedFrames = channelInfo.combined_frames
+          CombinedFrames = channelInfo.combined_frames,
+          LogMemoryDiagnostics = m_LogMemoryDiagnostics
         };
         m_InitializingMeshRenderer = meshRenderer;
 
@@ -559,17 +578,20 @@ namespace StreamingMesh
           ConnectionStatus = "Loading textures...";
           int size = textureSizes[i];
           string id = textureNames[i];
+          MemoryCheckpoint("texture/before",size,channelInfo.textureNames[i],meshRenderer);
           Texture2D texture = requiredTextures.TryGetValue(id, out var settings)
             ? TextureConverter.DeserializeFromBinary(combinedData, offsetBytes, size,
                 settings.hasTextureSettings && settings.textureLinear,
-                !settings.hasTextureSettings || settings.textureMipChain) : null;
+                !settings.hasTextureSettings || settings.textureMipChain, m_LogMemoryDiagnostics) : null;
           if(texture != null) {
             texture.name = channelInfo.textureNames[i];
             meshRenderer.AddTexture(id, texture);
           }
+          MemoryCheckpoint("texture/after",size,channelInfo.textureNames[i],meshRenderer);
           offsetBytes += size;
           yield return null;
         }
+        MemoryCheckpoint("initial/textures-ready",combinedData.Length,"",meshRenderer);
 
         //Split Materials
         List<string> materialNames = channelInfo.materials;
@@ -585,6 +607,7 @@ namespace StreamingMesh
           yield return null;
         }
 
+        MemoryCheckpoint("initial/materials-ready",combinedData.Length,"",meshRenderer);
         GameObject rootGameObject = new GameObject("RootGameObject");
         m_StreamRoot = rootGameObject;
         rootGameObject.transform.SetParent(transform, false);
@@ -623,17 +646,22 @@ namespace StreamingMesh
         }
 
         //CreateVertexBuffer;
+        MemoryCheckpoint("buffers/cpu-before",combinedData.Length,"",meshRenderer);
         meshRenderer.CreateVertexBuffer();
+        MemoryCheckpoint("buffers/cpu-after",combinedData.Length,"",meshRenderer);
         meshRenderer.DecodeBackend = m_DecodeBackend;
         meshRenderer.NormalMode = m_NormalMode;
         meshRenderer.TangentMode = m_TangentMode;
         if (m_TangentMaterialIds != null)
           foreach (string materialName in m_TangentMaterialIds)
             if (!string.IsNullOrEmpty(materialName)) meshRenderer.TangentMaterialIds.Add(materialName.TrimEnd('\0'));
+        MemoryCheckpoint("buffers/gpu-before",combinedData.Length,"",meshRenderer);
         meshRenderer.CreateVertexContainer(channelInfo.package_size, channelInfo.container_size);
+        MemoryCheckpoint("buffers/gpu-after",combinedData.Length,"",meshRenderer);
         meshRenderer.RootGameObject = rootGameObject;
         m_MeshRenderer = meshRenderer;
         m_InitializingMeshRenderer = null;
+        MemoryCheckpoint("initial/ready",combinedData.Length,"",meshRenderer);
         ConnectionStatus = "Model ready / receiving stream";
         Debug.Log($"StreamingMesh ready: {channelInfo.meshes.Count} meshes, {meshRenderer.TextureDictionary.Count} textures.");
       }

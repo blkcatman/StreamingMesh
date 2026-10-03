@@ -47,13 +47,16 @@ public class TextureConverter
 #endif
     }
 
-    public static Texture2D DeserializeFromBinary(byte[] data, int offsetBytes, int dataSize, bool linear = false, bool mipChain = true)
+    public static Texture2D DeserializeFromBinary(byte[] data, int offsetBytes, int dataSize, bool linear = false, bool mipChain = true, bool memoryDiagnostics = false)
     {
+      if (memoryDiagnostics) StreamingMesh.Core.Rendering.ReceiverMemoryDiagnostics.Log("texture/png-copy-before",dataSize);
       byte[] buffer = new byte[dataSize];
       Buffer.BlockCopy(data, offsetBytes, buffer, 0, dataSize);
+      if (memoryDiagnostics) StreamingMesh.Core.Rendering.ReceiverMemoryDiagnostics.Log("texture/png-copy-after",dataSize);
       Texture2D texture = new Texture2D(2, 2, TextureFormat.RGBA32, mipChain, linear);
       try
       {
+        if (memoryDiagnostics) StreamingMesh.Core.Rendering.ReceiverMemoryDiagnostics.Log("texture/load-image-before",dataSize);
         if (!texture.LoadImage(buffer, true))
         {
           UnityEngine.Object.Destroy(texture);
@@ -67,6 +70,8 @@ public class TextureConverter
         return null;
       }
 
+      if (memoryDiagnostics) StreamingMesh.Core.Rendering.ReceiverMemoryDiagnostics.Log("texture/load-image-after",dataSize,
+        $"width={texture.width} height={texture.height} mipCount={texture.mipmapCount}");
       return texture;
     }
   }

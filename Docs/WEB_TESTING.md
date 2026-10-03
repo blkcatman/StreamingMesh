@@ -152,3 +152,28 @@ python Tools/streamingmesh_dev_server.py --web-root Builds/WebReceiverIdentity
 ```
 
 計測用HTML変更はビルド出力だけに適用する。コンソールの `STM_METRICS` と検証用 `KaguraMemoryProbe` の `STM_PROBE` を記録する。ローカル計測結果は `Logs/KaguraReceiver-identity-summary.json`、`Logs/KaguraReceiver-identity-metrics.jsonl`、`Logs/KaguraReceiver-identity-console.json` に保存した。実行画面は `Logs/KaguraReceiver-identity-WebGPU.png`。
+
+## 初期ロードとバッファのメモリ診断
+
+ReceiverのInspectorで `Log Memory Diagnostics` を有効にすると、コンソールに `STM_MEM` のJSONを出力する。既定値は無効。初期GZip展開、PNG配列コピー、`Texture2D.LoadImage`、CPU/GPUバッファ生成、チャンク展開の前後、および初期化後の2秒間隔で測定する。JSONとログ文字列の生成には割り当てがあるため、通常のゼロアロケーション計測では無効にする。
+
+`wasmCapacity` はWASM線形メモリのバイト長、`wasmAllocated` はUnityの `GetMetricsInfo` が返すWASM使用量。`monoHeap` / `monoUsed` と `nativeAllocated` / `nativeReserved` はUnity Profilerの値であり、相互に重なる領域を含むため合算しない。Web以外ではWASMの2値は0。`bytes` はその段階で処理する入力サイズであり、全体の使用量ではない。
+
+`buffers` にはチャンクの確保容量・現在保持するデータ量・同時保持量の最大値・貸出スロット数とその最大値、フレームリング容量、頂点配列の容量、GPUプールとモデルの容量、GPU転送配列容量を記録する。GPU容量はGPUリソースの論理サイズであり、WASM使用量への加算値ではない。チャンクの最大値は貸出中の配列全体の入力サイズで、未復元フレームだけのサイズではない。GPU入力サイズ・保持スロットの最大値は診断有効時のみ追跡する。
+
+生成された非圧縮Webビルドに次を適用すると、Emscriptenのヒープ拡張時にも `STM_GROW` を出力する。
+
+```powershell
+python Tools/Tests/instrument_web_receiver.py Builds/WebReceiverMemoryTrace/index.html --trace-growth
+python Tools/streamingmesh_dev_server.py --web-root Builds/WebReceiverMemoryTrace
+```
+
+`STM_GROW` は拡張直前の容量、要求容量、拡張後の容量、直前の診断段階、呼出スタックを記録する。生成済みのframework.jsだけを変更し、想定する拡張処理が見つからなければ中止する。`seconds` はブラウザのperformance時刻で、`STM_MEM` のUnity起動後時刻とは基準が異なる。段階は直前のチェックポイントなので、処理がUnity内部へ遅延された場合は呼出スタックと併せて判断する。チャンク展開の前後のチェックポイントはWebビルドで記録する。
+
+2026-10-04、同じKAGURA ID収録をUnity 6000.5.10f1／URP 17.5のWebGPU Receiverで測定。最初の `Body_Base` の `LoadImage` 前後で、WASM容量は228,982,784 B（218.4 MiB）から744,423,424 B（709.9 MiB）へ増加し、使用量は169,335,520 Bから169,335,208 Bへ戻った。呼出中に3回の拡張要求を確認した。最終ビルドの寸法ログでも8192×8192、Mip数1を確認。PNG入力は8,863,800 Bだが、展開画像はRGBA換算で256 MiBとなる。同サイズのPNGは6枚あり、残り14枚は2048×2048。大きな拡張は画像ロード中の一時確保に対応するが、デコード・転送・Unity内部作業領域の個別内訳と瞬間的な全使用量は未測定。
+
+チャンクプール容量は68,222,976 B、同時保持データの最大値は68,190,306 B（約99.95%）、同時貸出最大3／4スロット。4番目のバイト配列は未確保だった。GPU転送配列は8,527,464 B、GPUプール33,331,848 B、CPU頂点配列563,736 B。GPUの保持最大18スロットと入力最大123,900 Bも記録した。これらのプール容量だけでは画像ロードによる約492 MiBの拡張を説明できない。
+
+診断有効で音声時刻287.592秒まで同期再生し、エラー／OOMは0件。2秒間隔のWASM容量最大1,075,380,224 B（1025.6 MiB）、使用量最大428,257,368 B（408.4 MiB）。管理ヒープ容量最大328,433,664 B（313.2 MiB）。ログ生成による割り当てとGCタイミングの差を含み、前節の診断無効時の性能値と直接比較しない。診断無効ではCPU/GPU復元・表示の既存266項目で測定区間の割り当て0 Bを維持し、バッファの使用量カウンターを含む180,563項目も通過した。
+
+詳細はローカルの `Logs/KaguraReceiver-memory-trace-snapshots.jsonl`、`Logs/KaguraReceiver-memory-trace-metrics.jsonl`、`Logs/KaguraReceiver-memory-trace-summary.json`。コンソール履歴には保持数の制限があるため、初期から中間で取得したスナップショットと終端のスナップショットを統合した。画像寸法を追加した最終ビルドの初期ログは `Logs/KaguraReceiver-memory-trace-final-console.json`。実行画面は `Logs/KaguraReceiver-memory-trace-WebGPU.png`。
