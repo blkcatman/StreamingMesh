@@ -80,8 +80,23 @@ namespace StreamingMesh.Core.Serialization
   public class MaterialInfo : BaseInfo
   {
     public string name;
+    public int version;
+    public string shaderName;
+    public string[] keywords;
+    public int renderQueue;
+    public bool enableInstancing;
+    public bool doubleSidedGI;
+    public int globalIlluminationFlags;
+    public List<MaterialTagInfo> tags;
+    public List<MaterialPassInfo> passes;
     public List<MaterialPropertyInfo> properties;
   }
+
+  [Serializable]
+  public class MaterialTagInfo { public string name, value; }
+
+  [Serializable]
+  public class MaterialPassInfo { public string name; public bool enabled; }
 
   [Serializable]
   public class MaterialPropertyInfo : BaseInfo
@@ -89,6 +104,12 @@ namespace StreamingMesh.Core.Serialization
     public string name;
     public int type;
     public string value;
+    public bool hasTextureSettings;
+    public Vector2 textureScale, textureOffset;
+    public bool textureLinear;
+    public bool textureMipChain;
+    public int textureFilterMode, textureWrapU, textureWrapV, textureAnisoLevel;
+    public float textureMipMapBias;
   }
 
   [Serializable]

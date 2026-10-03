@@ -66,8 +66,8 @@
 
 - Material の Texture プロパティから参照される `Texture2D` を収集する。
 - Texture名をキーとして重複を除外する。
-- Unity Editorで一時的にRead/Writeを有効化し、非圧縮のインポート状態にして `EncodeToPNG()` を実行する。
-- PNG生成後、元のImporter設定に戻す。
+- Unity EditorでGPU Blitして読み出し可能な一時Textureへ転送し、`EncodeToPNG()` を実行する。元アセットは再インポートしない。
+- sRGB／linearを保持し、NormalMapはインポート時のチャンネル配置から法線XYZを復元してRGBへ保存する。
 
 #### マテリアル
 
@@ -76,10 +76,15 @@
 ```text
 MaterialInfo
   name: string
+  version: int (= 2)
+  shaderName: string
+  keywords[] / renderQueue / instancing / GI flags
+  tags[] / passes[]
   properties[]:
     name: string
     type: int
     value: string
+    Textureの場合: scale / offset / linear / mipChain / sampler設定
 ```
 
 `type` と `value` は次の対応になる。
@@ -88,11 +93,12 @@ MaterialInfo
 | ---: | --- | --- |
 | 0 | `Color` | Unity JSONの `Color` |
 | 1 | `Vector` | Unity JSONの `Vector4` |
-| 2 | `Float` | Unity JSONの `float` |
-| 3 | `Range` | Unity JSONの `float` |
-| 4 | `Texture` | `stream.bin` 内のテクスチャ名 |
+| 2 | `Float` | InvariantCultureの数値文字列（往復形式） |
+| 3 | `Range` | InvariantCultureの数値文字列（往復形式） |
+| 4 | `Texture` | `stream.bin` 内のテクスチャ名。空文字は未設定 |
+| 5 | `Integer` | InvariantCultureの整数文字列 |
 
-Shader自体は送信しない。受信側はマテリアル名に対応するカスタムShaderを探し、見つからなければ設定された既定のShaderを使用する。
+プロパティは `name` で対応付ける。`type` は値の種類であり、プロパティのインデックスではない。Shaderコード自体は送信しない。受信側はマテリアルテンプレート、カスタムShader、送信Shader名（有効な場合）、既定Shaderの順に解決する。同じShaderではキーワード・描画状態も復元する。旧SenderのFloat/Rangeは `{}` として保存されていたため復元不能であり、旧データではテンプレート／Shaderの既定値を保つ。詳細と再収録手順は [RECEIVER_MATERIALS.md](RECEIVER_MATERIALS.md) を参照。
 
 #### Meshトポロジー
 
@@ -152,7 +158,7 @@ Receiverは次の順で復元する。
 
 1. `stream.json` を読み、名前配列、サイズ配列、量子化設定を取得する。
 2. `stream.bin` 全体をGZip展開する。
-3. `textureSizes` に従ってPNGを切り出し、`Texture2D.LoadImage()` でTextureを作る。
+3. Material JSONを先読みして使用するShaderと必要なTexture設定を解決する。`textureSizes` に従ってPNGを切り出し、必要なものだけを `Texture2D.LoadImage()` で復元し、linear／ミップ有無を反映する。
 4. `materialSizes` に従ってJSONを切り出し、Materialを生成して各プロパティを復元する。
 5. `meshSizes` に従ってJSONを切り出し、サブメッシュのインデックス、UV、マテリアル参照を持つMeshを作る。
 6. Meshごとの頂点数から、時系列デコード用の連続頂点バッファとMeshオフセットを構築する。

@@ -70,6 +70,8 @@ Windowsでは次のコマンドで、サンプルに依存しない一時Unity�
 
 16頂点fixtureでCPU表示処理をウォームアップ後256回測定し、法線のみ0.2453ms、法線＋接線0.4358ms、どちらも測定区間のmanaged割当0byteだった。この小さいfixtureの結果は実モデルの性能やUnity内部のnative割当を示さない。
 
-プロジェクト指定版6000.6.3f1、Metal／Vulkan／WebGPU実行、iPhone／Android、KAGURA＋Toonの見た目、負スケール描画、実モデルのGPU時間とCPU／GCは未検証。実機60fpsを保証しない。マテリアルテンプレート複製とサンプルのToon化は別作業。
+KAGURAサンプルはマテリアルテンプレートの複製とSenderの値の適用に対応し、GPUで法線・接線を再計算した13 MeshのToon静止描画を確認した。詳細は [Receiverのマテリアル復元](RECEIVER_MATERIALS.md) を参照。
+
+プロジェクト指定版6000.6.3f1、Metal／Vulkan／WebGPU実行、iPhone／Android、負スケール描画、実モデルのGPU時間とCPU／GCは未検証。実機60fpsを保証しない。
 
 Unity APIの挙動は [Mesh.RecalculateTangents](https://docs.unity3d.com/6000.0/Documentation/ScriptReference/Mesh.RecalculateTangents.html) を参照。設計時の検討は [実装ハンドオフ](RECEIVER_TANGENT_HANDOFF.md) に残している。
