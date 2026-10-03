@@ -8,17 +8,18 @@ namespace StreamingMesh.Core.Serialization
 {
   public static class MaterialConverter
   {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
     // Wire type numbers describe values, not property indices.
     const int ColorType=0, VectorType=1, FloatType=2, RangeType=3, TextureType=4, IntegerType=5;
     static readonly string[] RenderTags = {"RenderType", "IgnoreProjector", "IgnoreProjection", "DisableBatching", "ForceNoShadowCasting"};
 
-    public static MaterialInfo Serialize(Material material)
+    public static MaterialInfo Serialize(Material material, ResourceIdentityRegistry identities = null)
     {
       if (material == null || material.shader == null) return null;
+      identities = identities ?? new ResourceIdentityRegistry();
       var shader = material.shader;
       var info = new MaterialInfo {
-        name=material.name, version=CurrentVersion, shaderName=shader.name,
+        id=identities.GetId(material), name=material.name, version=CurrentVersion, shaderName=shader.name,
         keywords=material.shaderKeywords, renderQueue=material.renderQueue,
         enableInstancing=material.enableInstancing, doubleSidedGI=material.doubleSidedGI,
         globalIlluminationFlags=(int)material.globalIlluminationFlags,
@@ -56,6 +57,7 @@ namespace StreamingMesh.Core.Serialization
             property.type=TextureType;
             var texture=material.GetTexture(name);
             property.value=texture == null ? "" : texture.name;
+            property.textureId=identities.GetId(texture);
             property.hasTextureSettings=true;
             property.textureScale=material.GetTextureScale(name);
             property.textureOffset=material.GetTextureOffset(name);
@@ -80,7 +82,7 @@ namespace StreamingMesh.Core.Serialization
       if (templates != null)
         foreach (var binding in templates)
           if (binding != null && binding.template != null &&
-              string.Equals(binding.materialName,info.name.TrimEnd('\0'),StringComparison.Ordinal)) return binding.template;
+              string.Equals(binding.materialId,info.id,StringComparison.Ordinal)) return binding.template;
       return null;
     }
 
@@ -89,7 +91,7 @@ namespace StreamingMesh.Core.Serialization
     {
       var template=FindTemplate(info,templates);
       if (template != null) return template.shader;
-      if (shaderTable != null && shaderTable.GetTable().TryGetValue(info.name.TrimEnd('\0'),out var custom) && custom != null)
+      if (shaderTable != null && shaderTable.GetTable().TryGetValue(info.id,out var custom) && custom != null)
         return custom;
       if (useSenderShader && !string.IsNullOrEmpty(info.shaderName))
       {
@@ -105,18 +107,18 @@ namespace StreamingMesh.Core.Serialization
       ShaderTable shaderTable, Shader defaultShader, Dictionary<string,Texture2D> textures,
       IList<MaterialTemplateBinding> templates=null, bool useSenderShader=false)
     {
-      byte[] buffer=new byte[dataSize]; Buffer.BlockCopy(data,offsetBytes,buffer,0,dataSize);
-      return Deserialize(InfoConverter.Deserialize<MaterialInfo>(buffer),shaderTable,defaultShader,textures,templates,useSenderShader);
+      return Deserialize(InfoConverter.Deserialize<MaterialInfo>(data,offsetBytes,dataSize),shaderTable,defaultShader,textures,templates,useSenderShader);
     }
 
     public static Material Deserialize(MaterialInfo info, ShaderTable shaderTable, Shader defaultShader,
       Dictionary<string,Texture2D> textures, IList<MaterialTemplateBinding> templates=null, bool useSenderShader=false)
     {
+      if (info == null || info.version != CurrentVersion || !ResourceIdentity.IsValid(info.id))
+        throw new System.IO.InvalidDataException("Expected MaterialInfo v3 with a resource ID. Recreate the channel.");
       var template=FindTemplate(info,templates);
       Shader shader=ResolveShader(info,shaderTable,defaultShader,templates,useSenderShader);
       var material=template != null ? new Material(template) : new Material(shader);
       material.name=info.name;
-      bool invalidScalar=false;
       try
       {
         if (info.properties != null) foreach (var property in info.properties)
@@ -137,23 +139,22 @@ namespace StreamingMesh.Core.Serialization
             case FloatType:
             case RangeType:
               if (type!=ShaderPropertyType.Float && type!=ShaderPropertyType.Range) break;
-              // Legacy JsonUtility.ToJson(float) produced "{}": its value is lost.
               if (float.TryParse(property.value,NumberStyles.Float,CultureInfo.InvariantCulture,out float number) &&
                   !float.IsNaN(number) && !float.IsInfinity(number)) material.SetFloat(property.name,number);
-              else invalidScalar=true;
+              else throw new System.IO.InvalidDataException("Invalid numeric material property: " + property.name);
               break;
             case IntegerType:
               if (type==ShaderPropertyType.Int && int.TryParse(property.value,NumberStyles.Integer,CultureInfo.InvariantCulture,out int integer))
                 material.SetInteger(property.name,integer);
-              else invalidScalar=true;
+              else throw new System.IO.InvalidDataException("Invalid numeric material property: " + property.name);
               break;
             case TextureType:
               if (type!=ShaderPropertyType.Texture) break;
-              if (string.IsNullOrEmpty(property.value))
+              if (string.IsNullOrEmpty(property.textureId))
               {
                 if (property.hasTextureSettings) material.SetTexture(property.name,null);
               }
-              else if (textures != null && textures.TryGetValue(property.value,out var texture))
+              else if (textures != null && ResourceIdentity.IsValid(property.textureId) && textures.TryGetValue(property.textureId,out var texture))
               {
                 material.SetTexture(property.name,texture);
                 if (property.hasTextureSettings)
@@ -182,8 +183,6 @@ namespace StreamingMesh.Core.Serialization
           if (info.tags != null) foreach (var tag in info.tags) material.SetOverrideTag(tag.name,tag.value);
           if (info.passes != null) foreach (var pass in info.passes) material.SetShaderPassEnabled(pass.name,pass.enabled);
         }
-        if (invalidScalar)
-          Debug.LogWarning("StreamingMesh material '" + info.name + "' contains lost/invalid numeric values; kept template/shader defaults. Recreate the channel with the updated Sender.");
         return material;
       }
       catch

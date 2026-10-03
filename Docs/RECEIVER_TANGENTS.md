@@ -8,11 +8,11 @@ Receiver Inspectorの `Tangent Mode` を選ぶ。
 
 | 設定 | 対象 |
 | --- | --- |
-| `Auto`（既定） | `Tangent Material Names` に明示した配信マテリアル名を使うMesh |
+| `Auto`（既定） | `Tangent Material IDs` に明示した配信マテリアルIDを使うMesh |
 | `None` | 接線を再計算しない |
 | `Recalculate` | UV0（2成分以上）と三角形を持つすべてのMesh |
 
-`Auto` のリストは既定で空。接線空間のノーマルマップや独自シェーダー等で接線が必要な場合に、その**配信マテリアル名**を登録する。大文字・小文字を区別し、Shader名からは推測しない。複数submeshのうち一つでも登録済みマテリアルを参照する場合、そのMesh全体を対象にする。UV0や三角形がないMeshは対象から外れ、空でないMeshでは警告を出す。
+`Auto` のリストは既定で空。接線空間のノーマルマップや独自シェーダー等で接線が必要な場合に、その**配信マテリアルID**を登録する。大文字・小文字を区別し、Shader名からは推測しない。複数submeshのうち一つでも登録済みマテリアルを参照する場合、そのMesh全体を対象にする。UV0や三角形がないMeshは対象から外れ、空でないMeshでは警告を出す。
 
 接線を計算するMeshには法線も必要なので、`Normal Mode=None` でも対象Meshの法線計算を有効にして警告を出す。設定は接続時に確定する。Inspectorのモードやリストを変更した後は再接続する。これにより、描画バッファの古いハンドルを破棄し、必要な頂点属性で初期化し直す。
 
@@ -20,8 +20,8 @@ Receiver Inspectorの `Tangent Mode` を選ぶ。
 
 ```csharp
 renderer.TangentMode = ReceiverTangentMode.Auto;
-renderer.TangentMaterialNames.Add("Body");
-renderer.AddMesh("character", mesh, meshMaterialNames);
+renderer.TangentMaterialIds.Add(bodyMaterialId);
+renderer.AddMesh("character", mesh, meshMaterialIds);
 renderer.CreateVertexBuffer();
 renderer.CreateVertexContainer(packageSize, containerSize);
 ```

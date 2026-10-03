@@ -204,7 +204,7 @@ public static class ReceiverTangentVerification
         renderer.AddMesh("unlit",unlit,new[] {"unlit"});
         renderer.AddMesh("no-uv",noUv,new[] {"mapped"});
         renderer.AddMesh("empty",new Mesh(),new[] {"mapped"});
-        renderer.TangentMaterialNames.Add("mapped");
+        renderer.TangentMaterialIds.Add("mapped");
         renderer.CreateVertexBuffer(); renderer.CreateVertexContainer(128,4);
         var shape=target.vertices; var next=(Vector3[])shape.Clone(); next[1]=new Vector3(0,1,1); next[2]=new Vector3(-1,0,0);
         renderer.AddVertexData("0",Chunk(Keyframe(new[] {shape,shape,shape,new Vector3[0]}),

@@ -51,7 +51,7 @@
 
 - 整数と浮動小数点数は little-endian とする。
 - `timebase_hz` は `10,000,000` で、1 tick は100 nsである。
-- 現行 `protocol_version` は `3` である。Meshフレームヘッダーの識別値は `2` のままである。
+- 現行 `protocol_version` は `4` である。Meshフレームヘッダーの識別値は `2` のままである。
 - `.bin` と `.stmv` は拡張子に関係なく、ファイル全体が GZip ストリームである。
 - GZip処理には `System.IO.Compression.GZipStream` を使用する。
 - GZipは通信量を減らす可逆圧縮であり、頂点の量子化による非可逆圧縮とは別工程である。
@@ -65,7 +65,7 @@
 #### テクスチャ
 
 - Material の Texture プロパティから参照される `Texture2D` を収集する。
-- Texture名をキーとして重複を除外する。
+- TextureのリソースID（プロジェクト相対パスのSHA-256等）をキーとして重複を除外する。
 - Unity EditorでGPU Blitして読み出し可能な一時Textureへ転送し、`EncodeToPNG()` を実行する。元アセットは再インポートしない。
 - sRGB／linearを保持し、NormalMapはインポート時のチャンネル配置から法線XYZを復元してRGBへ保存する。
 
@@ -76,7 +76,8 @@
 ```text
 MaterialInfo
   name: string
-  version: int (= 2)
+  id: string (SHA-256 hex)
+  version: int (= 3)
   shaderName: string
   keywords[] / renderQueue / instancing / GI flags
   tags[] / passes[]
@@ -84,7 +85,7 @@ MaterialInfo
     name: string
     type: int
     value: string
-    Textureの場合: scale / offset / linear / mipChain / sampler設定
+    Textureの場合: textureId / scale / offset / linear / mipChain / sampler設定
 ```
 
 `type` と `value` は次の対応になる。
@@ -95,10 +96,10 @@ MaterialInfo
 | 1 | `Vector` | Unity JSONの `Vector4` |
 | 2 | `Float` | InvariantCultureの数値文字列（往復形式） |
 | 3 | `Range` | InvariantCultureの数値文字列（往復形式） |
-| 4 | `Texture` | `stream.bin` 内のテクスチャ名。空文字は未設定 |
+| 4 | `Texture` | 表示名。参照は別フィールド `textureId`。空のIDは未設定 |
 | 5 | `Integer` | InvariantCultureの整数文字列 |
 
-プロパティは `name` で対応付ける。`type` は値の種類であり、プロパティのインデックスではない。Shaderコード自体は送信しない。受信側はマテリアルテンプレート、カスタムShader、送信Shader名（有効な場合）、既定Shaderの順に解決する。同じShaderではキーワード・描画状態も復元する。旧SenderのFloat/Rangeは `{}` として保存されていたため復元不能であり、旧データではテンプレート／Shaderの既定値を保つ。詳細と再収録手順は [RECEIVER_MATERIALS.md](RECEIVER_MATERIALS.md) を参照。
+プロパティは `name` で対応付ける。`type` は値の種類であり、プロパティのインデックスではない。Shaderコード自体は送信しない。受信側はマテリアルテンプレート、カスタムShader、送信Shader名（有効な場合）、既定Shaderの順に解決する。同じShaderではキーワード・描画状態も復元する。旧チャンネル／MaterialInfo形式は拒否し、再収録を必要とする。詳細と再収録手順は [RECEIVER_MATERIALS.md](RECEIVER_MATERIALS.md) を参照。
 
 #### Meshトポロジー
 
@@ -109,7 +110,7 @@ MeshInfo
   name
   vertexCount
   subMeshCount
-  materialNames[]
+  materialIds[]
   indicesCounts[]
   indices[]
   uv[] / uv2[] / uv3[] / uv4[]
@@ -141,7 +142,7 @@ materials[]     <-> materialSizes[]
 meshes[]        <-> meshSizes[]
 ```
 
-名前配列とサイズ配列、および連結順は必ず一致させる必要がある。概念上のoffsetは次のように計算できる。
+ID／Meshキー配列とサイズ配列、および連結順は必ず一致させる必要がある。概念上のoffsetは次のように計算できる。
 
 ```text
 textureOffset(i) = sum(textureSizes[0 .. i-1])
@@ -165,7 +166,7 @@ Receiverは次の順で復元する。
 
 次の不変条件が崩れると正しく復元できない。
 
-- 名前配列とサイズ配列の要素数が同じであること。
+- ID／Meshキー配列とサイズ配列の要素数が同じであること。
 - 全サイズの合計がGZip展開後の長さと一致すること。
 - Materialが参照するTexture名が `textures[]` 内で一意であること。
 - `indices[]` が各Meshの `vertexCount` 範囲内であること。

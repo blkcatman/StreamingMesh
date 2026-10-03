@@ -23,7 +23,7 @@ Unityのメッシュ・音声ストリーミング実装と、UnityChan KAGURA�
 
 旧SDユニティちゃんのサンプルシーンと素材は削除しました。過去の検証記録は `Docs/` に残しています。
 
-受信Meshの接線はGPU／CPUで再計算できます。Receiverの `Tangent Mode` で有効化し、`Auto` では `Tangent Material Names` に接線が必要な配信マテリアル名を登録します。設定後は再接続してください。詳細と検証範囲は[Receiverの接線再構築](Docs/RECEIVER_TANGENTS.md)を参照してください。
+受信Meshの接線はGPU／CPUで再計算できます。Receiverの `Tangent Mode` で有効化し、`Auto` では `Tangent Material IDs` に接線が必要な配信マテリアルIDを登録します。設定後は再接続してください。詳細と検証範囲は[Receiverの接線再構築](Docs/RECEIVER_TANGENTS.md)を参照してください。
 
 KAGURA ReceiverはURP ToonでSenderのマテリアル設定を復元します。更新後はSenderでCreate Channelと録画を作り直し、Receiverで再接続してください。テンプレート設定と送信対象は[Receiverのマテリアル復元](Docs/RECEIVER_MATERIALS.md)を参照してください。
 

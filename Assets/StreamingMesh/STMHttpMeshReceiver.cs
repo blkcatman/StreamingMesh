@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using System.Collections.Generic;
 using System;
 using System.IO;
@@ -559,7 +559,7 @@ namespace StreamingMesh
         Material mat = null;
         foreach (KeyValuePair<string, Material> pair in m_materialList)
         {
-          if (pair.Key == info.materialNames[i])
+          if (pair.Key == info.materialIds[i])
           {
             mat = pair.Value;
             mat.name = pair.Key;
@@ -596,54 +596,10 @@ namespace StreamingMesh
 
     void OnMaterialInfoReceived(string name, MaterialInfo matInfo)
     {
-      Material mat;
-      Shader refShader = null;
-      bool result = customShaders.GetTable().TryGetValue(name.TrimEnd('\0'), out refShader);
-      if (result)
-        mat = new Material(refShader);
-      else
-        mat = new Material(defaultShader);
-
-      if (mat != null)
-      {
-        foreach (MaterialPropertyInfo info in matInfo.properties)
-        {
-          switch (info.type)
-          {
-            case 0://ShaderUtil.ShaderPropertyType.Color:
-              Color col = JsonUtility.FromJson<Color>(info.value);
-              mat.SetColor(info.name, col);
-              break;
-            case 1://ShaderUtil.ShaderPropertyType.Vector:
-              Vector4 vec = JsonUtility.FromJson<Vector4>(info.value);
-              mat.SetVector(info.name, vec);
-              break;
-            case 2://ShaderUtil.ShaderPropertyType.Float:
-              float fValue = JsonUtility.FromJson<float>(info.value);
-              mat.SetFloat(info.name, fValue);
-              break;
-            case 3://ShaderUtil.ShaderPropertyType.Range:
-              float rValue = JsonUtility.FromJson<float>(info.value);
-              mat.SetFloat(info.name, rValue);
-              break;
-            case 4://ShaderUtil.ShaderPropertyType.TexEnv:
-              foreach (KeyValuePair<string, Texture2D> pair in m_textureList)
-              {
-                if (pair.Key == info.value)
-                {
-                  Texture2D texture = pair.Value;
-                  mat.SetTexture(info.name, pair.Value);
-                }
-              }
-              break;
-          }
-        }
-        //end of foreach
-      }
-      else
-        Debug.LogError("Not found ANY shader!");
-
-      KeyValuePair<string, Material> matPair = new KeyValuePair<string, Material>(matInfo.name, mat);
+      var textures = new Dictionary<string, Texture2D>();
+      foreach (var pair in m_textureList) textures.Add(pair.Key, pair.Value);
+      Material mat = MaterialConverter.Deserialize(matInfo, customShaders, defaultShader, textures);
+      KeyValuePair<string, Material> matPair = new KeyValuePair<string, Material>(matInfo.id, mat);
       m_materialList.Add(matPair);
     }
 

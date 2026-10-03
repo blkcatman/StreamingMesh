@@ -26,7 +26,8 @@ Copy-Item -Path "$repoRoot/Assets/Samples/UnityChanKAGURA/Scenes/KaguraReceiver.
 foreach ($script in @('KaguraReceiverControls','KaguraDemoControls')) {
   Copy-Item -Path "$repoRoot/Assets/Samples/UnityChanKAGURA/Scripts/$script.cs*" -Destination "$VerificationProject/Assets/Samples/UnityChanKAGURA/Scripts" -Force
 }
-Copy-Item -LiteralPath "$PSScriptRoot/ReceiverMaterialVerification.cs", "$PSScriptRoot/ReceiverTangentVerification.cs" -Destination "$VerificationProject/Assets/Editor" -Force
+Copy-Item -LiteralPath "$PSScriptRoot/ReceiverMaterialVerification.cs", "$PSScriptRoot/ReceiverTangentVerification.cs", "$PSScriptRoot/ResourceIdentityVerification.cs" -Destination "$VerificationProject/Assets/Editor" -Force
+Copy-Item -Path "$repoRoot/Assets/StreamingMesh/Editor/ReceiverResourceBuildProcessor.cs*" -Destination "$VerificationProject/Assets/Editor" -Force
 Copy-Item -LiteralPath "$PSScriptRoot/MaterialFixture.shader" -Destination "$VerificationProject/Assets/Shaders" -Force
 $editorVersion = (Get-Item -LiteralPath $EditorPath).Directory.Parent.Name
 "m_EditorVersion: $editorVersion" | Set-Content -LiteralPath "$VerificationProject/ProjectSettings/ProjectVersion.txt" -Encoding utf8

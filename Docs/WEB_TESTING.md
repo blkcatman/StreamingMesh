@@ -125,3 +125,30 @@ Unity 6000.6.3f1でKAGURA受信シーンのWebGLビルドに成功し、ロー�
 一時的にWeb版のAuto設定をCPU頂点復元へ切り替えたビルドでは、音声とメッシュの同期再生を開始し、ブラウザ上で音声時刻12秒以上とモデルの動きを確認した。ブラウザの自動再生制限により、再生開始には画面クリックが必要だった。WebGPUは描画APIとして引き続き使用していた。
 
 続く検証では、`AsyncQueueSynchronisation` フェンスはこのWebGPU環境で「async compute非対応」の例外になった。そこで復元スナップショットの先頭16バイトだけをCommandBuffer内で非同期readbackし、GPU完了を判定した。GPUのキーフレーム0の先頭頂点 `(0.003906, 1.070313, -0.066406)` と差分フレーム1の `(0.003906, 1.070313, -0.066345)` は、同じ配信データからCPUで計算した値と6桁表示で一致した。GPU経路のまま音声・メッシュが同期再生し、音声時刻26秒超とモデルの変化を確認。現行のWebビルドはこの方法を使用する。全頂点をCPUへ戻すのではなく、1フレームあたり16バイトだけ完了確認に使用する。WebGPUが使えない環境ではGPU経路の初期化に失敗し、CPU復元を使う。
+
+## リソースID導入後のKAGURA検証（2026-10-04）
+
+`feature/resource-path-identities` のコードでSenderを再収録し、`channel_KAGURA_ID` を生成した。v4チャンネル／v3 MaterialInfo、9マテリアル・20テクスチャ・13メッシュ・23,489頂点、29チャンク・8,628フレーム、29音声セグメント。32個のTextureプロパティ参照が20個のIDを共有し、すべてのMaterial／Texture参照とフレームのシーケンス・PTS、音声サンプル連続性を検証した。
+
+Unity 6000.5.10f1／URP 17.5でWebGPU＋WebGL 2フォールバック、WASM上限4 GBのReceiverをビルド。WebGPUのGPU復元・法線・接線再計算で終端の約4:47.6まで同期再生し、ブラウザのエラー／OOMは0件だった。MSEは終端通知を出さないため、UIのPlaying表示とaudio.paused=falseは終端でも残る。
+
+| 観測最大値 | 前回（名前参照） | 今回（ID参照＋初期メモリ削減） | 減少 |
+| --- | ---: | ---: | ---: |
+| WASM確保済み容量 | 1,294,336,000 B（1,234.4 MiB） | 998,375,424 B（952.1 MiB） | 22.9% |
+| WASM使用量 | 567,275,912 B（541.0 MiB） | 388,342,648 B（370.4 MiB） | 31.5% |
+| Managedヒープ容量 | 465,743,872 B（444.2 MiB） | 288,546,816 B（275.2 MiB） | 38.0% |
+| チャンクプール | 68,222,976 B（65.1 MiB） | 68,222,976 B（65.1 MiB） | 同量で再利用 |
+
+前回のWASM計測は10秒間隔、今回は2秒間隔。ProfilerのManagedヒープ計測は双方10秒間隔。値はこのKAGURA収録・環境で観測した最大値であり、瞬間的なピークの保証ではない。今回はID導入に加え、初期GZipのMemoryStream拡張／ToArrayとJSONのバイト配列コピーを除去し、ビルド時にテンプレートのローカル画像参照を外した。`.data` は21,937,308 Bから8,376,590 Bへ減少した。KAGURAの配信Texture数は前後とも20であり、ID化単独の削減効果を示す比較ではない。
+
+再生計算の初期化後はCPU復元10,000フレーム、法線・接線付きCPU更新230回、GPU復元、法線・接線付きGPU表示1,000回で管理ヒープの割り当て0 Bを再確認した（266項目）。ネットワーク、GZip、UI、初期構築を含むReceiver全体はゼロアロケーションではない。リソースID24項目、マテリアル3,569項目、接線474項目も通過し、静止形状のSender／Receiverマテリアル描画比較はbyte差0だった。指定Editor 6000.6.3f1／URP 17.6とモバイルは未検証。
+
+再現用の確認コマンド:
+
+```powershell
+python Tools/Tests/verify_resource_capture.py DevData/channels/channel_KAGURA_ID
+python Tools/Tests/instrument_web_receiver.py Builds/WebReceiverIdentity/index.html
+python Tools/streamingmesh_dev_server.py --web-root Builds/WebReceiverIdentity
+```
+
+計測用HTML変更はビルド出力だけに適用する。コンソールの `STM_METRICS` と検証用 `KaguraMemoryProbe` の `STM_PROBE` を記録する。ローカル計測結果は `Logs/KaguraReceiver-identity-summary.json`、`Logs/KaguraReceiver-identity-metrics.jsonl`、`Logs/KaguraReceiver-identity-console.json` に保存した。実行画面は `Logs/KaguraReceiver-identity-WebGPU.png`。

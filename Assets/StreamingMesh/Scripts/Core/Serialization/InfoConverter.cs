@@ -16,7 +16,12 @@ namespace StreamingMesh.Core.Serialization
 
     public static T Deserialize<T>(byte[] data) where T : BaseInfo
     {
-      string json = Encoding.UTF8.GetString(data);
+      return Deserialize<T>(data, 0, data.Length);
+    }
+
+    public static T Deserialize<T>(byte[] data, int offset, int count) where T : BaseInfo
+    {
+      string json = Encoding.UTF8.GetString(data, offset, count);
       T info = JsonUtility.FromJson<T>(json);
       return info;
     }
@@ -29,6 +34,7 @@ namespace StreamingMesh.Core.Serialization
     
   }
 
+  [Serializable]
   public class BaseInfo 
   {
   }
@@ -36,6 +42,7 @@ namespace StreamingMesh.Core.Serialization
   [Serializable]
   public class ChannelInfo : BaseInfo
   {
+    public const int CurrentVersion = 4;
     public int protocol_version;
     public long timebase_hz;
     public int container_size;
@@ -45,6 +52,7 @@ namespace StreamingMesh.Core.Serialization
     public List<string> meshes;
     public List<string> materials;
     public List<string> textures;
+    public List<string> textureNames;
     public List<int> meshSizes;
     public List<int> materialSizes;
     public List<int> textureSizes;
@@ -68,7 +76,7 @@ namespace StreamingMesh.Core.Serialization
     public string name;
     public int vertexCount;
     public int subMeshCount;
-    public List<string> materialNames;
+    public List<string> materialIds;
     public List<int> indicesCounts;
     public List<int> indices;
     public Vector2[] uv;
@@ -77,8 +85,10 @@ namespace StreamingMesh.Core.Serialization
     public Vector2[] uv4;
   }
 
+  [Serializable]
   public class MaterialInfo : BaseInfo
   {
+    public string id;
     public string name;
     public int version;
     public string shaderName;
@@ -104,6 +114,7 @@ namespace StreamingMesh.Core.Serialization
     public string name;
     public int type;
     public string value;
+    public string textureId;
     public bool hasTextureSettings;
     public Vector2 textureScale, textureOffset;
     public bool textureLinear;

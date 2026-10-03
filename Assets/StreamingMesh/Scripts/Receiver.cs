@@ -26,6 +26,7 @@ namespace StreamingMesh
   public class MaterialTemplateBinding
   {
     public string materialName;
+    public string materialId;
     public Material template;
   }
 
@@ -110,18 +111,31 @@ namespace StreamingMesh
     [SerializeField] ReceiverDecodeBackend m_DecodeBackend = ReceiverDecodeBackend.Auto;
     [SerializeField, Tooltip("Reconnect after changing vertex settings. Tangent reconstruction enables normals on target meshes even when this is None.")]
     ReceiverNormalMode m_NormalMode = ReceiverNormalMode.Auto;
-    [SerializeField, Tooltip("Auto uses the explicit Tangent Material Names list. Recalculate processes all meshes with UV0 and triangles. Reconnect after changing this setting.")]
+    [SerializeField, Tooltip("Auto uses the explicit Tangent Material IDs list. Recalculate processes all meshes with UV0 and triangles. Reconnect after changing this setting.")]
     ReceiverTangentMode m_TangentMode = ReceiverTangentMode.Auto;
-    [SerializeField, Tooltip("Stream material names whose shaders require tangents (any submesh enables its entire mesh). Used in Auto mode; reconnect after editing.")]
-    string[] m_TangentMaterialNames = new string[0];
+    [SerializeField, Tooltip("Stream material IDs whose shaders require tangents (any submesh enables its entire mesh). Used in Auto mode; reconnect after editing.")]
+    string[] m_TangentMaterialIds = new string[0];
 
     //Shaders
     public Shader m_DefaultShader;
     public ShaderTable m_CustomShaders;
-    [SerializeField, Tooltip("Clone a local material for this stream material name, then apply Sender properties and state. References also keep the sample's shader variants in builds.")]
+    [SerializeField, Tooltip("Clone a local material for this stream material ID, then apply Sender properties and state. References also keep the sample's shader variants in builds.")]
     MaterialTemplateBinding[] m_MaterialTemplates = new MaterialTemplateBinding[0];
     [SerializeField, Tooltip("Use the Sender shader when no material template or explicit shader mapping is set. The shader and required variants must be included in the Receiver build.")]
     bool m_UseSenderShader;
+
+    [SerializeField, Tooltip("Build templates without local textures. Enable only when the Sender supplies every required texture property.")]
+    bool m_StreamTexturesOnlyTemplates;
+
+#if UNITY_EDITOR
+    void OnValidate()
+    {
+      var identities = new ResourceIdentityRegistry();
+      foreach (var binding in m_MaterialTemplates ?? new MaterialTemplateBinding[0])
+        if (binding != null && binding.template != null && string.IsNullOrEmpty(binding.materialId))
+          binding.materialId = identities.GetId(binding.template);
+    }
+#endif
 
     //StreamingRenderers
     StreamingMeshRenderer m_MeshRenderer = null;
@@ -212,7 +226,16 @@ namespace StreamingMesh
     {
       IsInitializing = true;
       try { yield return CreateInitialData(); }
-      finally { IsInitializing = false; }
+      finally
+      {
+        IsInitializing = false;
+        if (m_MeshRenderer == null)
+        {
+          string status = ConnectionStatus;
+          ResetPlaybackData();
+          ConnectionStatus = status;
+        }
+      }
       if (m_MeshRenderer == null) yield break;
       m_ElapsedTimeToPolling = m_PollingInterval;
       SetUpdateSettings();
@@ -418,6 +441,12 @@ namespace StreamingMesh
         ConnectionStatus = "Channel request failed. Check the URL, server and local network permission.";
         yield break;
       }
+      if (channelInfo.protocol_version != ChannelInfo.CurrentVersion)
+      {
+        ConnectionStatus = "Unsupported channel format. Recreate the channel with the current Sender.";
+        yield break;
+      }
+      ValidateResourceTables(channelInfo);
 
       if(channelInfo != null)
       {
@@ -438,18 +467,25 @@ namespace StreamingMesh
         //Get CombinedData
         ConnectionStatus = "Downloading model and textures. Please wait...";
         byte[] combinedData = null;
+        Exception initialDataError = null;
         wrapper.RequestBinary(GetAbsoluteURL(channelInfo.data), bin => {
           if(bin != null) {
-            combinedData = ExternalTools.Decompress(bin);
+            try { combinedData = ExternalTools.DecompressExact(bin, 128 * 1024 * 1024); }
+            catch (Exception error) { initialDataError = error; }
           }
         });
         yield return new WaitUntil(wrapper.RequestFinished);
 
         if(combinedData == null)
         {
-          ConnectionStatus = "Model download failed. Reconnect to retry.";
+          ConnectionStatus = initialDataError == null ? "Model download failed. Reconnect to retry." : "Invalid model data: " + initialDataError.Message;
           yield break;
         }
+        long expectedBytes = 0;
+        foreach (var size in channelInfo.textureSizes) expectedBytes += size;
+        foreach (var size in channelInfo.materialSizes) expectedBytes += size;
+        foreach (var size in channelInfo.meshSizes) expectedBytes += size;
+        if (combinedData.Length != expectedBytes) throw new InvalidDataException("Initial-data sizes do not match the payload.");
 
         StreamingMeshRenderer meshRenderer = new StreamingMeshRenderer
         {
@@ -481,26 +517,35 @@ namespace StreamingMesh
 
         // Material records follow the texture payloads. Inspect them first so a
         // fallback shader doesn't allocate large maps it never samples.
+        var textureIds = new HashSet<string>(channelInfo.textures, StringComparer.Ordinal);
         var requiredTextures = new Dictionary<string, MaterialPropertyInfo>();
+        int requiredMaterialCount = 0;
         int materialOffset = 0;
         foreach (int size in channelInfo.textureSizes) materialOffset += size;
         foreach (int size in channelInfo.materialSizes)
         {
-          var bytes = new byte[size];
-          Buffer.BlockCopy(combinedData, materialOffset, bytes, 0, size);
-          var info = InfoConverter.Deserialize<MaterialInfo>(bytes);
+          var info = InfoConverter.Deserialize<MaterialInfo>(combinedData, materialOffset, size);
+          if (info == null || info.properties == null || info.version != MaterialConverter.CurrentVersion || info.id != channelInfo.materials[requiredMaterialCount++])
+            throw new InvalidDataException("Material record does not match its ID table.");
           Shader shader = MaterialConverter.ResolveShader(info, m_CustomShaders, m_DefaultShader,
             m_MaterialTemplates, m_UseSenderShader);
           foreach (var property in info.properties)
           {
+            if (property == null || string.IsNullOrEmpty(property.name)) throw new InvalidDataException("Invalid material property.");
+            if (property.type == 4 && !string.IsNullOrEmpty(property.textureId) && !textureIds.Contains(property.textureId))
+              throw new InvalidDataException("Material references a missing texture ID.");
             int index = shader.FindPropertyIndex(property.name);
-            if (property.type == 4 && !string.IsNullOrEmpty(property.value) && index >= 0 &&
+            if (property.type == 4 && !string.IsNullOrEmpty(property.textureId) && index >= 0 &&
                 shader.GetPropertyType(index) == UnityEngine.Rendering.ShaderPropertyType.Texture)
             {
-              if (requiredTextures.TryGetValue(property.value, out var existing) &&
-                  (existing.textureLinear != property.textureLinear || existing.textureMipChain != property.textureMipChain))
+              if (!ResourceIdentity.IsValid(property.textureId)) throw new InvalidDataException("Invalid texture resource ID.");
+              if (requiredTextures.TryGetValue(property.textureId, out var existing) &&
+                  (existing.textureLinear != property.textureLinear || existing.textureMipChain != property.textureMipChain ||
+                   existing.textureFilterMode != property.textureFilterMode || existing.textureWrapU != property.textureWrapU ||
+                   existing.textureWrapV != property.textureWrapV || existing.textureAnisoLevel != property.textureAnisoLevel ||
+                   existing.textureMipMapBias != property.textureMipMapBias))
                 throw new InvalidDataException("Conflicting settings for stream texture '" + property.value + "'.");
-              requiredTextures[property.value] = property;
+              requiredTextures[property.textureId] = property;
             }
           }
           materialOffset += size;
@@ -513,14 +558,14 @@ namespace StreamingMesh
         {
           ConnectionStatus = "Loading textures...";
           int size = textureSizes[i];
-          string name = textureNames[i];
-          Texture2D texture = requiredTextures.TryGetValue(name, out var settings)
+          string id = textureNames[i];
+          Texture2D texture = requiredTextures.TryGetValue(id, out var settings)
             ? TextureConverter.DeserializeFromBinary(combinedData, offsetBytes, size,
                 settings.hasTextureSettings && settings.textureLinear,
                 !settings.hasTextureSettings || settings.textureMipChain) : null;
           if(texture != null) {
-            texture.name = name;
-            meshRenderer.AddTexture(name, texture);
+            texture.name = channelInfo.textureNames[i];
+            meshRenderer.AddTexture(id, texture);
           }
           offsetBytes += size;
           yield return null;
@@ -535,8 +580,7 @@ namespace StreamingMesh
           Material material = MaterialConverter.DeserializeFromBinary(
             combinedData, offsetBytes, size, m_CustomShaders, m_DefaultShader, meshRenderer.TextureDictionary,
             m_MaterialTemplates, m_UseSenderShader);
-          string name = material.name;
-          meshRenderer.AddMaterial(name, material);
+          meshRenderer.AddMaterial(materialNames[i], material);
           offsetBytes += size;
           yield return null;
         }
@@ -554,17 +598,16 @@ namespace StreamingMesh
           int size = meshSizes[i];
           List<string> refMaterials = null;
           Mesh mesh = MeshConverter.DeserializeFromBinary(
-            combinedData, offsetBytes, size, channelInfo.container_size, out refMaterials);
+            combinedData, offsetBytes, size, channelInfo.container_size, out refMaterials, meshRenderer.MaterialDictionary);
 
           List<Material> materials = new List<Material>();
           for(int j = 0; j < refMaterials.Count; j++)
           {
-            Material material = null;
-            if(meshRenderer.MaterialDictionary.TryGetValue(refMaterials[j], out material))
-            {
-              materials.Add(material);
-              yield return null;
-            }
+            if (string.IsNullOrEmpty(refMaterials[j])) { materials.Add(null); continue; }
+            if (!ResourceIdentity.IsValid(refMaterials[j]) || !meshRenderer.MaterialDictionary.TryGetValue(refMaterials[j], out var material))
+              throw new InvalidDataException("Mesh references a missing material ID.");
+            materials.Add(material);
+            yield return null;
           }
 
           GameObject obj = new GameObject("Mesh_" + name);
@@ -573,7 +616,7 @@ namespace StreamingMesh
           MeshRenderer renderer = obj.AddComponent<MeshRenderer>();
 
           meshFilter.mesh = mesh;
-          renderer.materials = materials.ToArray();
+          renderer.sharedMaterials = materials.ToArray();
           meshRenderer.AddMesh(name, mesh, refMaterials);
           offsetBytes += size;
           yield return null;
@@ -584,9 +627,9 @@ namespace StreamingMesh
         meshRenderer.DecodeBackend = m_DecodeBackend;
         meshRenderer.NormalMode = m_NormalMode;
         meshRenderer.TangentMode = m_TangentMode;
-        if (m_TangentMaterialNames != null)
-          foreach (string materialName in m_TangentMaterialNames)
-            if (!string.IsNullOrEmpty(materialName)) meshRenderer.TangentMaterialNames.Add(materialName.TrimEnd('\0'));
+        if (m_TangentMaterialIds != null)
+          foreach (string materialName in m_TangentMaterialIds)
+            if (!string.IsNullOrEmpty(materialName)) meshRenderer.TangentMaterialIds.Add(materialName.TrimEnd('\0'));
         meshRenderer.CreateVertexContainer(channelInfo.package_size, channelInfo.container_size);
         meshRenderer.RootGameObject = rootGameObject;
         m_MeshRenderer = meshRenderer;
@@ -594,6 +637,26 @@ namespace StreamingMesh
         ConnectionStatus = "Model ready / receiving stream";
         Debug.Log($"StreamingMesh ready: {channelInfo.meshes.Count} meshes, {meshRenderer.TextureDictionary.Count} textures.");
       }
+    }
+
+    static void ValidateResourceTables(ChannelInfo info)
+    {
+      if (info.meshes == null || info.meshSizes == null || info.meshes.Count != info.meshSizes.Count ||
+          info.materials == null || info.materialSizes == null || info.materials.Count != info.materialSizes.Count ||
+          info.textures == null || info.textureSizes == null || info.textureNames == null ||
+          info.textures.Count != info.textureSizes.Count || info.textures.Count != info.textureNames.Count ||
+          info.materials.Count > 4096 || info.textures.Count > 4096 || info.meshes.Count > 256)
+        throw new InvalidDataException("Invalid initial-data resource tables.");
+      var ids = new HashSet<string>(StringComparer.Ordinal);
+      foreach (var id in info.materials) if (!ResourceIdentity.IsValid(id) || !ids.Add(id)) throw new InvalidDataException("Invalid/duplicate material ID.");
+      ids.Clear();
+      foreach (var id in info.textures) if (!ResourceIdentity.IsValid(id) || !ids.Add(id)) throw new InvalidDataException("Invalid/duplicate texture ID.");
+      ids.Clear();
+      foreach (var id in info.meshes) if (string.IsNullOrEmpty(id) || !ids.Add(id)) throw new InvalidDataException("Invalid/duplicate mesh key.");
+      long bytes = 0;
+      foreach (var sizes in new[] { info.textureSizes, info.materialSizes, info.meshSizes })
+        foreach (int size in sizes) { if (size <= 0) throw new InvalidDataException("Invalid initial-data record size."); bytes += size; }
+      if (bytes > 128 * 1024 * 1024) throw new InvalidDataException("Initial-data memory budget exceeded.");
     }
 
     void SetUpdateSettings()

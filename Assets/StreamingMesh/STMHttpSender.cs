@@ -435,6 +435,7 @@ namespace StreamingMesh
         return;
       }
 
+      serializer.BeginResourceSnapshot();
       Dictionary<string, Material> materials = new Dictionary<string, Material>();
       Dictionary<string, Texture> textures = new Dictionary<string, Texture>();
       List<MeshInfo> meshInfos = new List<MeshInfo>();
@@ -442,6 +443,7 @@ namespace StreamingMesh
       List<string> meshNames = new List<string>();
       List<string> materialNames = new List<string>();
       List<string> textureNames = new List<string>();
+      List<string> textureDisplayNames = new List<string>();
 
       for (int i = 0; i < renderers.Count; i++)
       {
@@ -459,15 +461,12 @@ namespace StreamingMesh
         for (int materialIndex = 0; materialIndex < sharedMaterials.Length; materialIndex++)
         {
           Material material = sharedMaterials[materialIndex];
-          if (material == null || materials.ContainsKey(material.name))
-            continue;
-          materials.Add(material.name, material);
-
+          if (material == null) continue;
           MaterialInfo materialInfo = serializer.CreateMaterialInfo(material);
-          if (materialInfo == null)
-            continue;
+          if (materialInfo == null || materials.ContainsKey(materialInfo.id)) continue;
+          materials.Add(materialInfo.id, material);
           materialInfos.Add(materialInfo);
-          materialNames.Add("material" + materialNames.Count);
+          materialNames.Add(materialInfo.id);
 
           List<KeyValuePair<string, Texture>> texturePairs = serializer.GetTexturesFromMaterial(material);
           if (texturePairs == null)
@@ -478,6 +477,7 @@ namespace StreamingMesh
               continue;
             textures.Add(texturePair.Key, texturePair.Value);
             textureNames.Add(texturePair.Key);
+            textureDisplayNames.Add(texturePair.Value.name);
           }
         }
       }
@@ -513,7 +513,8 @@ namespace StreamingMesh
       ChannelInfo channelInfo = serializer.CreateChannelInfo(
         containerSize, packageSize, FrameInterval, combinedFrames,
         meshNames, materialNames, textureNames,
-        meshBufferSizes, materialBufferSizes, textureBufferSizes);
+        meshBufferSizes, materialBufferSizes, textureBufferSizes,
+        textureDisplayNames);
 
       serializer.Send(channelInfo);
       serializer.Send(Lib.ExternalTools.Compress(combinedBuffer.ToArray()));

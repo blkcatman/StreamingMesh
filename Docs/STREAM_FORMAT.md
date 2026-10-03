@@ -6,15 +6,17 @@
 
 すべての整数値と浮動小数点値はリトルエンディアンで格納する。`ChannelInfo.timebase_hz` は.NETのtickと同じ `10,000,000` である。プロトコルv2では、従来の32ビットstampフィールドを単調増加するシーケンス番号として使用し、正確な64ビットの表示時刻（PTS）を追加している。
 
-受信側は、プロトコルv1の21バイトヘッダーも引き続きデコードできる。
+Receiverのチャンネル読み込みはv4のみ受け付ける。フレームデコーダー単体にはv1ヘッダーの処理も残るが、旧チャンネルの互換性は提供しない。
 
 プロトコルv3ではMeshフレームヘッダー自体はv2のまま、fMP4音声ストリームを追加する。
+
+v4ではMaterial／Textureの参照を表示名からリソースIDへ変更する。`materials/textures` はID配列、`textureNames` は表示名配列。`MaterialInfo.id`、`MeshInfo.materialIds`、Textureプロパティの `textureId` を使う。詳細は [RECEIVER_MATERIALS.md](RECEIVER_MATERIALS.md) を参照。
 
 ## チャンネルのメタデータ
 
 `stream.json` は、静的なMesh／Materialデータとストリームのプレイリストを記述する。
 
-- `protocol_version`: 現在は `3`。
+- `protocol_version`: 現在は `4`。
 - `timebase_hz`: 1秒あたりのtick数。
 - `container_size`、`package_size`: 頂点位置の量子化パラメーター。
 - `frame_interval`: 公称フレーム間隔（秒）。

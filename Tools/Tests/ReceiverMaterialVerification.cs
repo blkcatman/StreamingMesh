@@ -44,23 +44,24 @@ public static class ReceiverMaterialVerification
         var info=MaterialConverter.Serialize(sender);
         foreach(var property in info.properties.Where(p=>p.type==4 && !string.IsNullOrEmpty(p.value)))
         {
-          if(textures.ContainsKey(property.value)) continue;
+          if(textures.ContainsKey(property.textureId)) continue;
           var png=TextureConverter.SerializeToPNG(sender.GetTexture(property.name));
           var received=TextureConverter.DeserializeFromBinary(png,0,png.Length,property.textureLinear,property.textureMipChain);
-          received.name=property.value; textures.Add(property.value,received);
+          received.name=property.value; textures.Add(property.textureId,received);
         }
         // Exercise the actual JSON/binary receive entry point and real template precedence.
         var data=InfoConverter.Serialize(info);
-        var templates=new[] {new MaterialTemplateBinding {materialName=sender.name,template=original}};
+        var templates=new[] {new MaterialTemplateBinding {materialName=sender.name,materialId=info.id,template=original}};
         var restored=MaterialConverter.DeserializeFromBinary(data,0,data.Length,null,Shader.Find("Unlit/Color"),textures,templates,true);
         Compare(sender,restored);
         Check(original.renderQueue!=restored.renderQueue,"Template asset was changed or Sender state ignored");
         UnityEngine.Object.DestroyImmediate(restored);
         var bare=MaterialConverter.Deserialize(info,null,Shader.Find("Unlit/Color"),textures,null,true);
         Compare(sender,bare); UnityEngine.Object.DestroyImmediate(bare);
-        VerifyLegacy(original,textures);
+        VerifyUnsupportedVersion(original,textures);
         UnityEngine.Object.DestroyImmediate(sender);
       }
+      ResourceIdentityVerification.Run();
       VerifyGeneric();
       VerifyNormalExport();
       VerifyRenderedAppearance(textures);
@@ -108,15 +109,12 @@ public static class ReceiverMaterialVerification
     }
   }
 
-  static void VerifyLegacy(Material template,Dictionary<string,Texture2D> textures)
+  static void VerifyUnsupportedVersion(Material template,Dictionary<string,Texture2D> textures)
   {
-    var info=new MaterialInfo {name=template.name,properties=new List<MaterialPropertyInfo> {
-      new MaterialPropertyInfo {name="_BaseColor_Step",type=3,value="{}"}}};
-    var restored=MaterialConverter.Deserialize(info,null,template.shader,textures,
-      new[] {new MaterialTemplateBinding {materialName=template.name,template=template}});
-    if(template.HasProperty("_BaseColor_Step")) Near(template.GetFloat("_BaseColor_Step"),restored.GetFloat("_BaseColor_Step"),"Lost legacy value overwrote template");
-    Check(template.shaderKeywords.OrderBy(k=>k).SequenceEqual(restored.shaderKeywords.OrderBy(k=>k)),"Legacy keywords overwritten");
-    UnityEngine.Object.DestroyImmediate(restored);
+    var info=MaterialConverter.Serialize(template); info.version=2;
+    bool rejected=false;
+    try {MaterialConverter.Deserialize(info,null,template.shader,textures);} catch(InvalidDataException) {rejected=true;}
+    Check(rejected,"Old material format was accepted");
   }
 
   static void VerifyGeneric()
@@ -131,10 +129,10 @@ public static class ReceiverMaterialVerification
     Check(restored.GetInteger("_Integer")==123456789,"Integer precision lost");
     Check(restored.GetVector("_Vector")==source.GetVector("_Vector") && restored.GetColor("_Color")==source.GetColor("_Color"),"Vector/color roundtrip");
     Check(restored.GetTexture("_MainTex")==null,"Explicit null texture ignored");
-    var mapping=new ShaderTable(); mapping.GetTable().Add("fixture",Shader.Find("Unlit/Color"));
+    var mapping=new ShaderTable(); mapping.GetTable().Add(info.id,Shader.Find("Unlit/Color"));
     var fallback=MaterialConverter.Deserialize(info,mapping,shader,null,null,true);
     Check(fallback.shader.name=="Unlit/Color","Explicit shader mapping ignored");
-    info.properties.Add(new MaterialPropertyInfo {name="_MainTex",type=4,value="missing"});
+    info.properties.Add(new MaterialPropertyInfo {name="_MainTex",type=4,value="missing",textureId=ResourceIdentity.Hash("missing")});
     bool rejected=false; try {MaterialConverter.Deserialize(info,null,shader,null);} catch(InvalidOperationException) {rejected=true;}
     Check(rejected,"Missing texture silently kept a local texture");
     foreach(var material in new[] {source,restored,fallback}) UnityEngine.Object.DestroyImmediate(material);
@@ -160,6 +158,7 @@ public static class ReceiverMaterialVerification
   static void VerifyRenderedAppearance(Dictionary<string,Texture2D> textures)
   {
     var asset=AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>("Assets/Settings/StreamingMeshURP.asset");
+    if(asset==null) asset=AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>("Assets/StreamingMesh/Settings/StreamingMeshURP.asset");
     Check(asset!=null,"URP asset missing"); GraphicsSettings.defaultRenderPipeline=asset; QualitySettings.renderPipeline=asset;
     var source=UnityEngine.Object.Instantiate(AssetDatabase.LoadAssetAtPath<GameObject>(
       "Assets/Samples/UnityChanKAGURA/Models/FBX/UnityCHanKAGURA.fbx"));
@@ -192,7 +191,7 @@ public static class ReceiverMaterialVerification
         var info=MaterialConverter.Serialize(template);
         // Reuse exported texture payloads but apply the original material settings.
         var material=MaterialConverter.Deserialize(info,null,template.shader,textures,
-          new[] {new MaterialTemplateBinding {materialName=template.name,template=template}});
+          new[] {new MaterialTemplateBinding {materialName=template.name,materialId=info.id,template=template}});
         materials.Add(material);restoredMaterials.Add(material);
       }
       draw.sharedMaterials=materials.ToArray();
@@ -255,12 +254,19 @@ public static class ReceiverMaterialVerification
     var settings=new SerializedObject(receiver);
     Check(settings.FindProperty("m_NormalMode").enumValueIndex==2 && settings.FindProperty("m_TangentMode").enumValueIndex==2,"Sample basis settings missing");
     Check(settings.FindProperty("m_UseSenderShader").boolValue,"Sender shader setting missing");
+    Check(settings.FindProperty("m_StreamTexturesOnlyTemplates").boolValue,"Sample texture stripping missing");
+    StreamingMesh.Editor.ReceiverResourceBuildProcessor.PrepareScene(scene);
+    settings.Update();
     var bindings=settings.FindProperty("m_MaterialTemplates"); Check(bindings.arraySize==9,"Sample mappings missing");
     for(int i=0;i<bindings.arraySize;i++)
     {
       var element=bindings.GetArrayElementAtIndex(i);
       var template=(Material)element.FindPropertyRelative("template").objectReferenceValue;
-      Check(template!=null && template.name==element.FindPropertyRelative("materialName").stringValue,"Sample material binding unresolved");
+      Check(template!=null && template.name==element.FindPropertyRelative("materialName").stringValue + " (stream template)","Sample material binding unresolved");
+      Check(ResourceIdentity.IsValid(element.FindPropertyRelative("materialId").stringValue),"Sample ID missing");
+      for(int property=0;property<template.shader.GetPropertyCount();property++)
+        if(template.shader.GetPropertyType(property)==ShaderPropertyType.Texture)
+          Check(template.GetTexture(template.shader.GetPropertyName(property))==null,"Template retained local texture dependency");
     }
     var key=scene.GetRootGameObjects().SelectMany(root=>root.GetComponentsInChildren<Light>()).Single();
     Check(key.type==LightType.Directional && Mathf.Abs(key.intensity-1.2f)<1e-6f,"Sample lighting missing");

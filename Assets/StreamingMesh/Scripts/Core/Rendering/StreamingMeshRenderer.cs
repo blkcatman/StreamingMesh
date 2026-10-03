@@ -32,7 +32,7 @@ namespace StreamingMesh.Core.Rendering
     readonly Dictionary<string, Material> m_MaterialDictionary = new Dictionary<string, Material>();
     readonly Dictionary<string, Mesh> m_MeshDictionary = new Dictionary<string, Mesh>();
     readonly List<Mesh> m_MeshList = new List<Mesh>();
-    readonly List<List<string>> m_MeshMaterialNames = new List<List<string>>();
+    readonly List<List<string>> m_MeshMaterialIds = new List<List<string>>();
     readonly HashSet<int> m_ReceivedChunks = new HashSet<int>();
     FrameRing<EncodedFrameSlice> m_EncodedFrames;
     EncodedChunkPool m_ChunkPool;
@@ -52,9 +52,9 @@ namespace StreamingMesh.Core.Rendering
     public ReceiverDecodeBackend DecodeBackend { get; set; } = ReceiverDecodeBackend.Auto;
     public ReceiverNormalMode NormalMode { get; set; } = ReceiverNormalMode.Auto;
     public ReceiverTangentMode TangentMode { get; set; } = ReceiverTangentMode.Auto;
-    /// <summary>Stream material names explicitly declared to require tangents in Auto mode.
+    /// <summary>Stream material IDs explicitly declared to require tangents in Auto mode.
     /// Configure before CreateVertexContainer; reconnect to change the output layout.</summary>
-    public HashSet<string> TangentMaterialNames { get; } = new HashSet<string>(StringComparer.Ordinal);
+    public HashSet<string> TangentMaterialIds { get; } = new HashSet<string>(StringComparer.Ordinal);
     public bool IsGpuResident { get { return m_GpuPipeline != null; } }
     public int EncodedFrameCount { get { return m_EncodedFrames == null ? 0 : m_EncodedFrames.Count; } }
     public bool CanAcceptChunk { get { return EncodedFrameCount < Math.Max(16, m_CombinedFrames * 2) && (m_ChunkPool == null || m_ChunkPool.HasFreeChunk); } }
@@ -154,13 +154,13 @@ namespace StreamingMesh.Core.Rendering
         m_MaterialDictionary.Add(name, material);
     }
 
-    public void AddMesh(string name, Mesh mesh, IList<string> materialNames = null)
+    public void AddMesh(string name, Mesh mesh, IList<string> materialIds = null)
     {
       if (!m_MeshDictionary.ContainsKey(name))
       {
         m_MeshDictionary.Add(name, mesh);
         m_MeshList.Add(mesh);
-        m_MeshMaterialNames.Add(materialNames == null ? new List<string>() : new List<string>(materialNames));
+        m_MeshMaterialIds.Add(materialIds == null ? new List<string>() : new List<string>(materialIds));
       }
     }
 
@@ -216,8 +216,8 @@ namespace StreamingMesh.Core.Rendering
       {
         bool requested = TangentMode == ReceiverTangentMode.Recalculate;
         if (TangentMode == ReceiverTangentMode.Auto)
-          foreach (string material in m_MeshMaterialNames[i])
-            if (material != null && TangentMaterialNames.Contains(material.TrimEnd('\0')))
+          foreach (string material in m_MeshMaterialIds[i])
+            if (material != null && TangentMaterialIds.Contains(material.TrimEnd('\0')))
               { requested = true; break; }
         bool tangents = requested && GpuVertexPipeline.CanRecalculateTangents(m_MeshList[i]);
         m_RecalculateTangents[i] = tangents;
@@ -669,7 +669,7 @@ namespace StreamingMesh.Core.Rendering
       foreach (var material in m_MaterialDictionary.Values) UnityEngine.Object.Destroy(material);
       foreach (var texture in m_TextureDictionary.Values) UnityEngine.Object.Destroy(texture);
       m_MeshList.Clear();
-      m_MeshMaterialNames.Clear();
+      m_MeshMaterialIds.Clear();
       m_MeshDictionary.Clear();
       m_MaterialDictionary.Clear();
       m_TextureDictionary.Clear();

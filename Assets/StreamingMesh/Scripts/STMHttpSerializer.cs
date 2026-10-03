@@ -16,6 +16,9 @@ namespace StreamingMesh {
 
 		public bool useLocalFiles = true;
 
+        ResourceIdentityRegistry resourceIdentities = new ResourceIdentityRegistry();
+        public void BeginResourceSnapshot() { resourceIdentities = new ResourceIdentityRegistry(); }
+
 		public ChannelInfo CreateChannelInfo(
 			int containerSize,
 			int packageSize,
@@ -26,11 +29,12 @@ namespace StreamingMesh {
 			List<string> textureNames,
 			List<int> meshSizes,
 			List<int> materialSizes,
-			List<int> textureSizes
+			List<int> textureSizes,
+            List<string> textureDisplayNames
 ) {
 #if UNITY_EDITOR
 			ChannelInfo channelInfo = new ChannelInfo {
-				protocol_version = 3,
+				protocol_version = ChannelInfo.CurrentVersion,
 				timebase_hz = TimeSpan.TicksPerSecond,
 				container_size = containerSize,
 				package_size = packageSize,
@@ -39,6 +43,7 @@ namespace StreamingMesh {
 				meshes = meshNames,
 				materials = materialNames,
 				textures = textureNames,
+                textureNames = textureDisplayNames,
 				meshSizes = meshSizes,
 				materialSizes = materialSizes,
 				textureSizes = textureSizes,
@@ -83,7 +88,7 @@ namespace StreamingMesh {
 					uv2 = mesh.uv2,
 					uv3 = mesh.uv3,
 					uv4 = mesh.uv4,
-					materialNames = (from m in renderer.sharedMaterials select m.name).ToList(),
+					materialIds = (from m in renderer.sharedMaterials select resourceIdentities.GetId(m)).ToList(),
 					indicesCounts = new List<int>(),
 					indices = new List<int>()
 				};
@@ -123,7 +128,7 @@ namespace StreamingMesh {
 				if(propertyType == ShaderUtil.ShaderPropertyType.TexEnv) {
 					Texture tex = material.GetTexture(propertyName);
 					if(tex != null) {
-						textures.Add(new KeyValuePair<string, Texture>(tex.name, tex));
+						textures.Add(new KeyValuePair<string, Texture>(resourceIdentities.GetId(tex), tex));
 					}
                 }
 			}
@@ -135,7 +140,7 @@ namespace StreamingMesh {
 
         public MaterialInfo CreateMaterialInfo(Material material) {
 #if UNITY_EDITOR
-            return MaterialConverter.Serialize(material);
+            return MaterialConverter.Serialize(material, resourceIdentities);
 #else
             return null;
 #endif

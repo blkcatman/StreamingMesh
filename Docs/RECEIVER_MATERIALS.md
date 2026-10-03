@@ -12,14 +12,15 @@ SenderのCreate Channelで、各Materialのプロパティ名と値を `stream.b
 4. **Record from start** で録画を開始する。
 5. KaguraReceiverで **Connect / Reconnect** する。端末では更新したシーンを再ビルドする。
 
-マテリアルはチャンネル作成時のスナップショットであり、録画中の変更は毎フレーム送信しない。設定を変えて比較する場合はこの手順を繰り返す。旧SenderはFloat/Rangeを `JsonUtility.ToJson(float)` で保存していたため、値が `{}` になっていた。このデータから元の数値は復元できない。旧データは数値をテンプレートまたはShaderの既定値に保ち、警告を出す。Senderの設定を確認するにはチャンネルを作り直す必要がある。
+マテリアルはチャンネル作成時のスナップショットであり、録画中の変更は毎フレーム送信しない。設定を変えて比較する場合はこの手順を繰り返す。チャンネル形式はv4、MaterialInfoはv3。旧形式のチャンネル／MaterialInfoは拒否するため、更新したSenderで作り直す必要がある。不正な数値も拒否する。
 
 ## Receiver設定
 
 | 設定 | 用途 |
 | --- | --- |
-| Material Templates | 配信マテリアル名とローカルMaterialを対応させる。複製後に送信値を適用する。 |
-| Custom Shaders | テンプレート未指定の配信マテリアル名にShaderを割り当てる。 |
+| Material Templates | 配信マテリアルIDとローカルMaterialを対応させる。複製後に送信値を適用する。 |
+| Stream Textures Only Templates | ビルド中のシーンコピーからテンプレートの画像参照を外し、ローカル画像と配信画像の二重保持を防ぐ。Senderが必要な全画像プロパティを提供する場合だけ有効にする。KAGURAでは有効。 |
+| Custom Shaders | テンプレート未指定の配信マテリアルIDにShaderを割り当てる。 |
 | Use Sender Shader | 上記の対応がなければ送信されたShader名を `Shader.Find` で探す。既定は無効。KAGURAでは有効。 |
 | Default Shader | 対応するShaderが見つからない場合に使う。 |
 
@@ -27,16 +28,24 @@ SenderのCreate Channelで、各Materialのプロパティ名と値を `stream.b
 
 Shaderコード自体は送信しない。Receiverのプロジェクト／ビルドにShaderと必要なバリアントを含める。KAGURAの9テンプレート参照は元のマテリアルが使うバリアントのビルド収録にも使われる。Senderで新しいキーワードの組み合わせへ変更する場合、その組み合わせがReceiverビルドにも含まれることを確認する。
 
-## MaterialInfo version 2
+## リソースIDとMaterialInfo version 3
 
-Mesh／音声プロトコルと `stream.bin` の連結形式は変更しない。Material JSONに `version: 2` と次の情報を追加する。
+Meshフレームヘッダー（v2）と音声形式、`stream.bin` の連結順序は維持する。チャンネルのメタデータはv4へ更新し、Material JSONには `version: 3` と次の情報を格納する。
+
+IDは `SHA256("asset\0" + 種類 + "\0" + パス + "\0" + localFileId)` の小文字16進64文字。パスは `Assets/...` または `Packages/...` のプロジェクト相対パスで、区切り文字を `/` に統一する。大文字・小文字は保持する。主アセットのlocalFileIdは0、FBX等のサブアセットはUnityのlocalFileIdを使う。これは同一リソースの識別であり、同じ画像内容の別ファイルをまとめるものではない。移動・改名するとIDが変わる。
+
+アセットパスを持たない生成リソースは、Create ChannelごとのセッションIDとオブジェクトの登録番号をハッシュ化する。同じスナップショット内の参照は共有するが、次のスナップショットではIDを変える。ID計算と登録は初期データ作成時だけ行い、再生フレームでは行わない。
+
+`ChannelInfo.materials/textures` はIDの配列、`textureNames` は対応する表示名。`MaterialInfo.id`、`MeshInfo.materialIds`、Textureプロパティの `textureId` で参照する。`MaterialInfo.name` とTextureプロパティの `value` は表示用で、一意性を要求しない。マテリアル枠の順序・空の枠・追加描画用の枠を保持する。文字列はUTF-8 JSONで可変長であり、固定長の名前領域はない。
+
+テンプレートの `materialId` が空ならEditorで参照アセットから設定する。別のテンプレートを配信マテリアルへ割り当てる場合は配信IDを明示する。ビルド処理はIDを焼き込み、必要に応じて画像なしの一時Materialへ差し替える。元の `.mat` ファイルとShaderのプロパティ・キーワードは保持する。
 
 - Shader名、キーワード、renderQueue、enableInstancing、doubleSidedGI、globalIlluminationFlags。
 - Color、Vector4、Float、Range、Integer、Texture。Float/RangeはInvariantCultureの往復可能な数値文字列、Integerは整数文字列で保存する。
-- Textureのscale/offset、linear/sRGB、ミップ有無、filterMode、wrap U/V、anisoLevel、mipMapBias。空文字のTexture値は明示的な未設定として復元する。
+- Textureのscale/offset、linear/sRGB、ミップ有無、filterMode、wrap U/V、anisoLevel、mipMapBias。空の `textureId` は明示的な未設定として復元する。
 - RenderType、IgnoreProjector、IgnoreProjection、DisableBatching、ForceNoShadowCastingの有効タグ値。Shaderに存在するPass名とLightModeの有効／無効状態。
 
-Textureは名前で共有するため異なるTextureには一意の名前を使う。Receiverは使用するShaderが参照するTextureだけを展開し、同名Textureのlinear／ミップ設定の矛盾を拒否する。必要なTextureが欠けた新形式データも拒否する。
+ReceiverはID単位でMaterial／Textureを共有し、使用するShaderが参照するTextureだけを展開する。同じIDのlinear／ミップ／サンプラー設定の矛盾、重複ID、不足した参照を拒否する。初期データのサイズ表とGZip展開サイズの一致を検査し、展開には最大128 MiBの1本の配列を使う。拡張するMemoryStreamとToArrayの二重配列を作らず、Material／Mesh JSONも元配列の範囲から直接読む。
 
 PNGはEditorでGPU Blitして生成し、元アセットを再インポートしない。NormalMapとしてインポートされたTextureは、プラットフォームのチャンネル配置から法線XYZを復元してRGBへ保存する。ReceiverはRGBA32として読み込み、linear設定とミップ有無を反映する。圧縮形式・圧縮による品質・独自ミップ内容は引き継がない。
 
@@ -50,12 +59,12 @@ PNGはEditorでGPU Blitして生成し、元アセットを再インポートし
 
 一時Unityプロジェクトへ本体のSender／Receiver、KAGURAモデル・マテリアル・Receiverシーン、同梱Toon Shaderをコピーして実行する。既定のURPは17.5.0。使用するEditorに合わせて `-UrpVersion` を指定できる。TimeWireは本体のpackages-lock.jsonに記録されたCoreコミットを使う。画像とログは表示された検証プロジェクト内の `Results/` と `material-verification.log` に出力する。
 
-2026-10-04、Unity 6000.5.10f1／URP 17.5.0／Windows Direct3D 11／RTX 4090 Laptop GPUでマテリアル関連3,388項目と接線関連474項目が通過。
+2026-10-04、Unity 6000.5.10f1／URP 17.5.0／Windows Direct3D 11／RTX 4090 Laptop GPUでマテリアル関連3,569項目とリソースID関連24項目と接線関連474項目が通過。
 
 - KAGURAの全9マテリアルと20 TextureをJSON／PNG経由で復元。テンプレートと異なるFloat／Range、キーワード、queue、Pass、Texture変換を設定して上書きを確認。
-- フランス語ロケールで数値往復、Integer精度、明示的なnull Texture、旧 `{}` データ、Shader優先順位、不足Texture、NormalMapのRGB出力を確認。
+- フランス語ロケールで数値往復、Integer精度、明示的なnull Texture、旧形式の拒否、Shader優先順位、不足Texture、NormalMapのRGB出力を確認。
 - 同じ形状・照明でSenderのマテリアルと復元したマテリアルを描画比較し、画像のbyte差は0。これは静止描画の比較であり、ネットワーク受信後の再計算法線との一致を示さない。
 - GPUパイプラインでKAGURAの13 Mesh／23,489頂点の法線・接線を再計算し、Toon描画を確認。
 - 実際のKaguraReceiverシーンのテンプレート参照と照明、既存の接線検証を確認。
 
-プロジェクト指定のUnity 6000.6.3f1／URP 17.6、Metal／Vulkan／WebGPU、iPhone／Android、通信・音声・アニメーションを含めた実機再生は今回の検証対象外。
+プロジェクト指定のUnity 6000.6.3f1／URP 17.6、Metal／Vulkan、iPhone／Android、モバイル実機再生は今回の検証対象外。

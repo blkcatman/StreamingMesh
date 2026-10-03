@@ -341,7 +341,7 @@ MonoBehaviour:
   m_DecodeBackend: 0
   m_NormalMode: 2
   m_TangentMode: 2
-  m_TangentMaterialNames: []
+  m_TangentMaterialIds: []
   m_DefaultShader: {fileID: 4800000, guid: 766736548846cdf459a9766614dcccab, type: 3}
   m_CustomShaders:
     list: []
@@ -364,6 +364,7 @@ MonoBehaviour:
     template: {fileID: 2100000, guid: 002064652c69eba4699de7e0319b02dc, type: 2}
   - materialName: Skin
     template: {fileID: 2100000, guid: cc28b9ef0843c9746a5a8276ed0f876a, type: 2}
+  m_StreamTexturesOnlyTemplates: 1
   m_UseSenderShader: 1
 --- !u!4 &2100285119
 Transform:
