@@ -5,7 +5,7 @@ UnityChanKAGURA_URP-release-1.0.1 から、モデル、身体・表情の Timeli
 ## シーン
 
 - `Scenes/KaguraDemo.unity`: Unity Editor で開いて Play。Toon 表示、身体・目・口のアニメーション、SpringBone、楽曲を再生します。画面左上で Pause / Play / Restart を操作できます。
-- `Scenes/KaguraReceiver.unity`: ローカルの `channel_KAGURA` を StreamingMesh で受信します。受信表示は既存の `StreamingMesh/Standard`（テクスチャ付き Unlit）です。Toon の陰影・輪郭・マテリアルキーワードの再現には別途対応が必要です。
+- `Scenes/KaguraReceiver.unity`: ローカルの `channel_KAGURA` を StreamingMesh で受信します。9種類のURP Toonマテリアルを複製し、Senderで設定されたプロパティ・テクスチャ・キーワード・描画状態を適用します。法線と接線を再計算し、Senderと同じキーライト・環境光を使用します。
 
 Timeline は約287.6秒。音声開始位置は原版と同じ6.6秒です。身体、目、口、音声を残し、元のステージ・カメラ・UI演出トラックは除いています。固定カメラの簡易デモであり、原版ライブ演出の完全移植ではありません。
 
@@ -22,6 +22,8 @@ Timeline は約287.6秒。音声開始位置は原版と同じ6.6秒です。身
 3. Play 後、画面の Create Channel を押します。初回はテクスチャの変換・送信に時間がかかります。サーバーログで `combined=stream.bin` の POST が200になったことを確認します。
 4. Record from start を押すと Timeline と録画を同じフレームで開始します。Stop Recording で終了し、送信が完了してから Play を終了します。
 5. `KaguraReceiver` を Play。Main Camera の送信設定と Receiver の Channel Address は同じチャンネルを指定してください。
+
+マテリアル設定はCreate Channel時点で保存されます。旧データではFloat/Rangeの数値が失われているため、更新後にCreate Channel → Record from start → Receiverで再接続の順に作り直してください。録画中のマテリアル変更は送信しません。Receiverの `Material Templates` は元アセットを変更せず、複製へSenderの値を上書きします。復元仕様と検証範囲は [Receiverのマテリアル復元](../../../Docs/RECEIVER_MATERIALS.md) を参照してください。
 
 音声エンコードと送信メタデータ生成は現状 Editor 専用です。シーン再生だけならサーバー・FFmpegは不要です。
 録画済みの音声プレイリストは現在ライブ形式のため、受信開始時に末尾付近から再生される場合があります。録画完了時のVOD確定処理は未実装です。
@@ -61,7 +63,7 @@ Web版は `Tools > StreamingMesh > Build Web KAGURA Receiver` で `Builds/WebRec
 
 メッシュ送信単位は `Combined Frames` 枚です。音声の分割時間も録画開始時に `Combined Frames / Frame Rate` 秒へ連動します（最短0.25秒）。60fps・300枚なら約5秒で、AACのフレーム境界により音声の実際の長さには端数が生じます。設定変更時は停止→Create Channel→録画開始→Receiverで再接続してください。実際の遅延には音声HLSのバッファリング・通信・メッシュ蓄積も含まれます。iOSの受信サンプルは60fpsを要求しますが、実際の描画性能は端末や処理負荷に依存します。
 
-Receiverコンポーネントの `Decode Backend` は既定の `Auto` でGPU常駐経路を選択し、非対応時はCPUを使用します。`CPU` を指定すると比較用のCPU経路になります。`Normal Mode` は `Auto` / `None` / `Recalculate` を選べます。現在のUnlitマテリアルではAutoが法線更新を省略します。設定は受信インスタンス作成時に読み込むため、テンプレートを変更して再接続してください。iPhoneへ反映する場合は再ビルドが必要です。設計・制限・検証結果は [Receiver GPU設計](../../../Docs/RECEIVER_GPU_PIPELINE.md) を参照してください。
+Receiverコンポーネントの `Decode Backend` は既定の `Auto` でGPU常駐経路を選択し、非対応時はCPUを使用します。`CPU` を指定すると比較用のCPU経路になります。KAGURAでは `Normal Mode` と `Tangent Mode` の両方を `Recalculate` に設定し、Toonの陰影・法線マップ・輪郭描画に使用します。設定は受信インスタンス作成時に読み込むため、テンプレートを変更して再接続してください。iPhoneへ反映する場合は再ビルドが必要です。設計・制限・検証結果は [Receiver GPU設計](../../../Docs/RECEIVER_GPU_PIPELINE.md) と [接線再構築](../../../Docs/RECEIVER_TANGENTS.md) を参照してください。
 
 音声はモデルとメッシュの準備後、先頭メッシュの時刻から開始します。メッシュが不足すると `Buffering / audio paused` と表示して音声も待機し、蓄積後に再開します。途中接続時も先頭から再生するため、現在の送信画面とは遅延があります。Receiver画面には再生・一時停止・停止・前後5秒移動・シークバーを追加しました。シークは指定時刻の直前にあるキーフレームのチャンクからメッシュと音声を再読み込みするため、再生再開前に短いバッファリングが入ります。`Auto-play after initial buffering` は既定で有効で、従来どおりバッファリング後に自動再生します。無効にして接続すると、準備後も一時停止のまま待機します。
 iOS用の上記ビルド処理は、生成した Info.plist にローカルネットワーク利用説明と `NSAllowsLocalNetworking` を追加します。Unity の HTTP 許可は DevelopmentOnly に設定します。通常のHTTPS通信に対するATSは有効です。

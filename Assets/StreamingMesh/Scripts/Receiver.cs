@@ -22,6 +22,13 @@ namespace StreamingMesh
   [System.Serializable]
   public class ShaderTable : Serialize.TableBase<string, Shader, ShaderPair> {}
 
+  [Serializable]
+  public class MaterialTemplateBinding
+  {
+    public string materialName;
+    public Material template;
+  }
+
   public class Receiver : MonoBehaviour
   {
     [SerializeField]
@@ -111,6 +118,10 @@ namespace StreamingMesh
     //Shaders
     public Shader m_DefaultShader;
     public ShaderTable m_CustomShaders;
+    [SerializeField, Tooltip("Clone a local material for this stream material name, then apply Sender properties and state. References also keep the sample's shader variants in builds.")]
+    MaterialTemplateBinding[] m_MaterialTemplates = new MaterialTemplateBinding[0];
+    [SerializeField, Tooltip("Use the Sender shader when no material template or explicit shader mapping is set. The shader and required variants must be included in the Receiver build.")]
+    bool m_UseSenderShader;
 
     //StreamingRenderers
     StreamingMeshRenderer m_MeshRenderer = null;
@@ -470,7 +481,7 @@ namespace StreamingMesh
 
         // Material records follow the texture payloads. Inspect them first so a
         // fallback shader doesn't allocate large maps it never samples.
-        var requiredTextures = new HashSet<string>();
+        var requiredTextures = new Dictionary<string, MaterialPropertyInfo>();
         int materialOffset = 0;
         foreach (int size in channelInfo.textureSizes) materialOffset += size;
         foreach (int size in channelInfo.materialSizes)
@@ -478,15 +489,19 @@ namespace StreamingMesh
           var bytes = new byte[size];
           Buffer.BlockCopy(combinedData, materialOffset, bytes, 0, size);
           var info = InfoConverter.Deserialize<MaterialInfo>(bytes);
-          Shader shader;
-          if (!m_CustomShaders.GetTable().TryGetValue(info.name.TrimEnd('\0'), out shader))
-            shader = m_DefaultShader;
+          Shader shader = MaterialConverter.ResolveShader(info, m_CustomShaders, m_DefaultShader,
+            m_MaterialTemplates, m_UseSenderShader);
           foreach (var property in info.properties)
           {
             int index = shader.FindPropertyIndex(property.name);
-            if (property.type == 4 && index >= 0 &&
+            if (property.type == 4 && !string.IsNullOrEmpty(property.value) && index >= 0 &&
                 shader.GetPropertyType(index) == UnityEngine.Rendering.ShaderPropertyType.Texture)
-              requiredTextures.Add(property.value);
+            {
+              if (requiredTextures.TryGetValue(property.value, out var existing) &&
+                  (existing.textureLinear != property.textureLinear || existing.textureMipChain != property.textureMipChain))
+                throw new InvalidDataException("Conflicting settings for stream texture '" + property.value + "'.");
+              requiredTextures[property.value] = property;
+            }
           }
           materialOffset += size;
         }
@@ -499,9 +514,12 @@ namespace StreamingMesh
           ConnectionStatus = "Loading textures...";
           int size = textureSizes[i];
           string name = textureNames[i];
-          Texture2D texture = requiredTextures.Contains(name)
-            ? TextureConverter.DeserializeFromBinary(combinedData, offsetBytes, size) : null;
+          Texture2D texture = requiredTextures.TryGetValue(name, out var settings)
+            ? TextureConverter.DeserializeFromBinary(combinedData, offsetBytes, size,
+                settings.hasTextureSettings && settings.textureLinear,
+                !settings.hasTextureSettings || settings.textureMipChain) : null;
           if(texture != null) {
+            texture.name = name;
             meshRenderer.AddTexture(name, texture);
           }
           offsetBytes += size;
@@ -515,7 +533,8 @@ namespace StreamingMesh
         {
           int size = materialSizes[i];
           Material material = MaterialConverter.DeserializeFromBinary(
-            combinedData, offsetBytes, size, m_CustomShaders, m_DefaultShader, meshRenderer.TextureDictionary);
+            combinedData, offsetBytes, size, m_CustomShaders, m_DefaultShader, meshRenderer.TextureDictionary,
+            m_MaterialTemplates, m_UseSenderShader);
           string name = material.name;
           meshRenderer.AddMaterial(name, material);
           offsetBytes += size;

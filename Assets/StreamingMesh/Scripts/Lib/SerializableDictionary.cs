@@ -37,6 +37,7 @@ namespace Serialize {
 
 		static Dictionary<TKey, TValue> ConvertListToDictionary(List<Type> list) {
 			Dictionary<TKey, TValue> dic = new Dictionary<TKey, TValue>();
+			if (list == null) return dic;
 			foreach(KeyAndValue<TKey, TValue> pair in list) {
 				dic.Add(pair.MaterialName, pair.Shader);
 			}

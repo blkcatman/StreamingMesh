@@ -133,97 +133,17 @@ namespace StreamingMesh {
 #endif
 		}
 
-		public MaterialInfo CreateMaterialInfo(Material material) {
+        public MaterialInfo CreateMaterialInfo(Material material) {
 #if UNITY_EDITOR
-			MaterialInfo materialInfo = new MaterialInfo() {
-				name = material.name
-			};
-
-			Shader shader = material.shader;
-            if(shader == null) {
-				return null;
-			}
-
-			int propertyCount = ShaderUtil.GetPropertyCount(shader);
-			materialInfo.properties = new List<MaterialPropertyInfo>();
-
-			for(int i = 0; i < propertyCount; i++) {
-				string propertyName = ShaderUtil.GetPropertyName(shader, i);
-				ShaderUtil.ShaderPropertyType propertyType =  ShaderUtil.GetPropertyType(shader, i);
-				MaterialPropertyInfo propertyInfo = new MaterialPropertyInfo() {
-					name = propertyName,
-					type = (int)propertyType
-				};
-
-				switch(propertyType) {
-					case ShaderUtil.ShaderPropertyType.Color:
-						propertyInfo.value = JsonUtility.ToJson(material.GetColor(propertyName));
-						break;
-					case ShaderUtil.ShaderPropertyType.Vector:
-						propertyInfo.value = JsonUtility.ToJson(material.GetVector(propertyName));
-                        break;
-					case ShaderUtil.ShaderPropertyType.Float:
-						propertyInfo.value = JsonUtility.ToJson(material.GetFloat(propertyName));
-                        break;
-					case ShaderUtil.ShaderPropertyType.Range:
-						propertyInfo.value = JsonUtility.ToJson(material.GetFloat(propertyName));
-						break;
-					case ShaderUtil.ShaderPropertyType.TexEnv:
-						Texture tex = material.GetTexture(propertyName);
-						if(tex != null) {
-							propertyInfo.value = tex.name;
-						} else {
-							continue;
-						}
-						break;
-				}
-				materialInfo.properties.Add(propertyInfo);
-            }
-
-			return materialInfo;
-#else
-			return null;
-#endif
-		}
-
-        // Kept for source compatibility; exporting never changes TextureImporter settings.
-        public static byte[] GetTextureToPNGByteArray(Texture texture, bool isReimportTexture) {
-#if UNITY_EDITOR
-            if (texture == null) return null;
-            if (texture.dimension != UnityEngine.Rendering.TextureDimension.Tex2D)
-                throw new ArgumentException("StreamingMesh PNG export requires a 2D texture.");
-
-            RenderTexture previous = RenderTexture.active;
-            bool previousSrgbWrite = GL.sRGBWrite;
-            RenderTexture temporary = null;
-            Texture2D readable = null;
-            try {
-                // Match the source transfer function so an sRGB color texture is
-                // encoded as sRGB bytes, and a linear data texture stays linear.
-                bool srgb = UnityEngine.Experimental.Rendering.GraphicsFormatUtility.IsSRGBFormat(texture.graphicsFormat);
-                temporary = RenderTexture.GetTemporary(texture.width, texture.height, 0,
-                    RenderTextureFormat.ARGB32, srgb ? RenderTextureReadWrite.sRGB : RenderTextureReadWrite.Linear);
-                GL.sRGBWrite = srgb && QualitySettings.activeColorSpace == ColorSpace.Linear;
-                Graphics.Blit(texture, temporary);
-                RenderTexture.active = temporary;
-                readable = new Texture2D(texture.width, texture.height, TextureFormat.RGBA32, false, !srgb);
-                readable.ReadPixels(new Rect(0, 0, texture.width, texture.height), 0, 0, false);
-                readable.Apply(false, false);
-                return readable.EncodeToPNG();
-            } finally {
-                RenderTexture.active = previous;
-                GL.sRGBWrite = previousSrgbWrite;
-                if (temporary != null) RenderTexture.ReleaseTemporary(temporary);
-                if (readable != null) {
-                    if (Application.isPlaying) UnityEngine.Object.Destroy(readable);
-                    else UnityEngine.Object.DestroyImmediate(readable);
-                }
-            }
+            return MaterialConverter.Serialize(material);
 #else
             return null;
 #endif
         }
-
+        // Kept for source compatibility; exporting never changes TextureImporter settings.
+        public static byte[] GetTextureToPNGByteArray(Texture texture, bool isReimportTexture) {
+            return TextureConverter.SerializeToPNG(texture);
+        }
 		public StreamInfo CreateStreamInfo(
 			long tickCnt,
 			long startTicks,
