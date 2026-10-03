@@ -1,5 +1,7 @@
 # Receiver GPU常駐パイプライン
 
+接線生成の追加方針は[Receiver接線計算の実装ハンドオフ](RECEIVER_TANGENT_HANDOFF.md)を参照。接線生成は現時点では未実装である。
+
 ## 目的・範囲
 
 Receiverの復元頂点をGPUに保持し、差分復元→PTSに基づく補間→MeshRenderer描画を接続する。全頂点のreadback、CPU補間、毎描画時のMesh.vertices再転送を通常のGPU経路から除く。Sender、HTTP、GZip、配信形式（v1/v2）、楽曲分割は変更しない。旧VertexContainerのAPIは互換用に残す。
