@@ -12,6 +12,19 @@ namespace StreamingMesh.Editor
         [MenuItem("Tools/StreamingMesh/Build iOS KAGURA Receiver")]
         public static void BuildReceiver()
         {
+            BuildReceiver("Assets/Samples/UnityChanKAGURA/Scenes/KaguraReceiver.unity",
+                "Builds/iOSKaguraReceiver", null, null);
+        }
+
+        [MenuItem("Tools/StreamingMesh/Build iOS Sync Diagnostic Receiver")]
+        public static void BuildSyncDiagnosticReceiver()
+        {
+            BuildReceiver("Assets/Samples/SyncDiagnostic/SyncDiagnosticReceiver.unity",
+                "Builds/iOSSyncDiagnosticReceiver", "com.blkcatman.streamingmesh.syncdiagnostic", "STM Sync");
+        }
+
+        static void BuildReceiver(string scene, string outputDirectory, string applicationId, string productName)
+        {
             if (EditorUserBuildSettings.activeBuildTarget != BuildTarget.iOS)
                 throw new InvalidOperationException("Select iOS in Build Profiles before building.");
             PlayerSettings.SetScriptingBackend(UnityEditor.Build.NamedBuildTarget.iOS, ScriptingImplementation.IL2CPP);
@@ -20,17 +33,33 @@ namespace StreamingMesh.Editor
             PlayerSettings.iOS.sdkVersion = iOSSdkVersion.DeviceSDK;
             PlayerSettings.iOS.targetOSVersionString = "15.0";
             PlayerSettings.insecureHttpOption = InsecureHttpOption.DevelopmentOnly;
-            string output = Path.GetFullPath("Builds/iOSKaguraReceiver");
-            var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+            string output = Path.GetFullPath(outputDirectory);
+            var target = UnityEditor.Build.NamedBuildTarget.iOS;
+            string previousApplicationId = PlayerSettings.GetApplicationIdentifier(target);
+            string previousProductName = PlayerSettings.productName;
+            try
             {
-                scenes = new[] { "Assets/Samples/UnityChanKAGURA/Scenes/KaguraReceiver.unity" },
-                locationPathName = output,
-                target = BuildTarget.iOS,
-                options = BuildOptions.Development
-            });
-            Debug.Log($"iOS receiver: {report.summary.result}, errors={report.summary.totalErrors}, output={output}");
-            if (report.summary.result != BuildResult.Succeeded)
-                throw new InvalidOperationException("iOS receiver build failed.");
+                if (applicationId != null) PlayerSettings.SetApplicationIdentifier(target, applicationId);
+                if (productName != null) PlayerSettings.productName = productName;
+                var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+                {
+                    scenes = new[] { scene },
+                    locationPathName = output,
+                    target = BuildTarget.iOS,
+                    options = BuildOptions.Development
+                });
+                Debug.Log($"iOS receiver ({scene}): {report.summary.result}, errors={report.summary.totalErrors}, output={output}");
+                if (report.summary.result != BuildResult.Succeeded)
+                    throw new InvalidOperationException("iOS receiver build failed.");
+            }
+            finally
+            {
+                PlayerSettings.SetApplicationIdentifier(target, previousApplicationId);
+                PlayerSettings.productName = previousProductName;
+                // BuildPlayer saves the temporary identity to ProjectSettings;
+                // Save Project also persists the restored PlayerSettings.
+                EditorApplication.ExecuteMenuItem("File/Save Project");
+            }
 #if UNITY_IOS
             // Only this local-test export receives LAN HTTP permissions.
             var plist = new UnityEditor.iOS.Xcode.PlistDocument();

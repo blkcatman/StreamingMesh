@@ -18,9 +18,11 @@ Unity側は`IStreamingAudioPlayer`を境界としてプラットフォーム実�
 | WebGL | Media Source Extensions | `stream.stma`、init、m4s |
 | macOS / iOS | AVFoundation `AVPlayer` | `audio.m3u8`、init、m4s |
 | Windows | 将来追加するMedia Foundation実装 | init、m4s |
-| Android | 将来追加するMediaExtractor / MediaCodec実装 | init、m4s |
+| Android | AndroidX Media3 `ExoPlayer` | `audio.m3u8`、init、m4s |
 
 Apple実装はAVPlayerの再生時刻をUnityへ返し、Receiverはその値をメッシュ再生クロックとして使う。AVPlayerがHLSを継続的に読み込むため、各`.m4s`を個別にデコーダーへ渡してAACデコーダーをリセットすることはない。
+
+Android実装も同じHLSプレイリストをMedia3で再生し、再生位置をUnityへ返す。Java側のExoPlayer操作はAndroidのメインLooperで行い、Unity側はキャッシュされた再生位置と状態を読み取る。実装は`Assets/StreamingMesh/Android/StreamingMeshAndroidAudio.java`と`Assets/StreamingMesh/Scripts/Core/Rendering/AndroidFmp4AudioPlayer.cs`。Androidビルドは`Assets/Plugins/Android/mainTemplate.gradle`からMedia3の`media3-exoplayer`と`media3-exoplayer-hls`を取得する。Media3はApache License 2.0で提供され、StreamingMesh本体のMITライセンスやUnityChan素材のUCLとは別に扱う。
 
 ## Appleプラグイン
 

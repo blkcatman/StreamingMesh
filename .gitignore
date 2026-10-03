@@ -24,6 +24,9 @@
 /.idea/
 /.vs/
 *.csproj
+!Tools/Tests/AudioPcmRingBufferTests.csproj
+/Tools/Tests/bin/
+/Tools/Tests/obj/
 *.sln
 *.suo
 *.user

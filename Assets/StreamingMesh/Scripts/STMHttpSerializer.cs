@@ -60,20 +60,21 @@ namespace StreamingMesh {
 #endif
 		}
 
-		public MeshInfo CreateMeshInfo(SkinnedMeshRenderer renderer) {
+		public MeshInfo CreateMeshInfo(Renderer renderer, Mesh source) {
 #if UNITY_EDITOR
-			Mesh source = renderer.sharedMesh;
 			if (source == null) return null;
 			Mesh snapshot = null;
 			try {
 				// Imported meshes can release their CPU data in Play mode. BakeMesh
 				// supplies readable topology and UVs without changing import settings.
 				Mesh mesh = source;
-				if (!source.isReadable) {
+				if (!source.isReadable && renderer is SkinnedMeshRenderer skinned) {
 					snapshot = new Mesh();
-					renderer.BakeMesh(snapshot);
+					skinned.BakeMesh(snapshot);
 					mesh = snapshot;
 				}
+				if (!mesh.isReadable)
+					throw new InvalidOperationException("StreamingMesh requires Read/Write Enabled on a MeshFilter mesh: " + source.name);
 				MeshInfo meshInfo = new MeshInfo() {
 					name = source.name,
 					vertexCount = mesh.vertexCount,

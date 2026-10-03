@@ -1,5 +1,33 @@
 {
   "dependencies": {
+    "com.timewire.core": {
+      "version": "https://github.com/blkcatman/TimeWire.git?path=/Core#main",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {
+        "com.unity.modules.audio": "1.0.0",
+        "com.unity.modules.director": "1.0.0"
+      },
+      "hash": "49008ea216f75f6db9dd545277ada367e8b44209"
+    },
+    "com.timewire.ntp": {
+      "version": "https://github.com/blkcatman/TimeWire.git?path=/NTP#main",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {
+        "com.timewire.core": "0.1.0"
+      },
+      "hash": "49008ea216f75f6db9dd545277ada367e8b44209"
+    },
+    "com.timewire.osc": {
+      "version": "https://github.com/blkcatman/TimeWire.git?path=/OSC#main",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {
+        "com.timewire.core": "0.1.0"
+      },
+      "hash": "49008ea216f75f6db9dd545277ada367e8b44209"
+    },
     "com.unity.2d.sprite": {
       "version": "1.0.0",
       "depth": 0,

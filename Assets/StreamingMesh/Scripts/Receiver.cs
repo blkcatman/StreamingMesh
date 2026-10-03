@@ -44,6 +44,62 @@ namespace StreamingMesh
     [SerializeField]
     bool m_AutoPlay = true;
 
+    [SerializeField, Tooltip("Start playback automatically after the initial audio and mesh buffer is ready.")]
+    bool m_AutoPlayAfterBuffering = true;
+
+    public double CurrentTimeSeconds { get { return m_CurrentTime; } }
+    public double DurationSeconds { get { return m_DurationSeconds; } }
+    public bool IsPlaying { get { return m_AudioPlaying; } }
+    public bool IsPlaybackRequested { get { return m_WantsToPlay; } }
+    public bool SupportsTransport { get { return m_UseFmp4Audio && m_Fmp4AudioPlayer != null; } }
+
+    /// <summary>Configure an inactive receiver before it starts loading.</summary>
+    public void ConfigurePlayback(bool autoPlayAfterBuffering, double startTimeSeconds = 0)
+    {
+      if (gameObject.activeInHierarchy)
+        throw new InvalidOperationException("Configure playback before activating the receiver.");
+      m_AutoPlayAfterBuffering = autoPlayAfterBuffering;
+      m_WantsToPlay = autoPlayAfterBuffering;
+      m_PlayIntentConfigured = true;
+      m_RequestedStartTime = Math.Max(0, startTimeSeconds);
+      m_CurrentTime = m_RequestedStartTime;
+    }
+
+    public void Play()
+    {
+      m_WantsToPlay = true;
+      m_PlayIntentConfigured = true;
+    }
+
+    public void Pause()
+    {
+      m_WantsToPlay = false;
+      m_PlayIntentConfigured = true;
+      m_Fmp4AudioPlayer?.SetPlaying(false);
+      m_AudioPlaying = false;
+      if (SupportsTransport) ConnectionStatus = "Paused";
+    }
+
+    public void Stop()
+    {
+      Pause();
+      Seek(0);
+    }
+
+    /// <summary>Rebuffer from the keyframe chunk before the requested time.</summary>
+    public void Seek(double timeSeconds)
+    {
+      if (double.IsNaN(timeSeconds) || double.IsInfinity(timeSeconds))
+        throw new ArgumentOutOfRangeException(nameof(timeSeconds));
+      m_RequestedStartTime = Math.Max(0, timeSeconds);
+      if (m_DurationSeconds > 0)
+        m_RequestedStartTime = Math.Min(m_RequestedStartTime, Math.Max(0, m_DurationSeconds - 0.05));
+      m_CurrentTime = m_RequestedStartTime;
+      StopAllCoroutines();
+      ResetPlaybackData();
+      if (isActiveAndEnabled) StartCoroutine(InitializePlayback());
+    }
+
     [SerializeField] ReceiverDecodeBackend m_DecodeBackend = ReceiverDecodeBackend.Auto;
     [SerializeField] ReceiverNormalMode m_NormalMode = ReceiverNormalMode.Auto;
 
@@ -74,6 +130,15 @@ namespace StreamingMesh
     bool m_PlaybackClockStarted = false;
     bool m_AudioSeekRequested;
     bool m_AudioPlaying;
+    bool m_WantsToPlay;
+    bool m_PlayIntentConfigured;
+    double m_RequestedStartTime;
+    double m_DurationSeconds;
+    GameObject m_StreamRoot;
+    int m_PlaybackGeneration;
+    // Positive values delay the mesh relative to the decoded audio clock.
+    // This can compensate for device-specific acoustic output latency.
+    public double MeshPresentationDelaySeconds { get; set; }
     float m_NextSyncLogTime;
     int m_StatsFrames;
     double m_StatsSeconds;
@@ -122,14 +187,19 @@ namespace StreamingMesh
 
     IEnumerator Start()
     {
+      if (!m_PlayIntentConfigured) m_WantsToPlay = m_AutoPlayAfterBuffering;
+      if (m_AutoPlay && m_MeshRenderer == null)
+        yield return InitializePlayback();
+    }
 
-      if(m_AutoPlay && m_MeshRenderer == null)
-      {
-        IsInitializing = true;
-        try { yield return StartCoroutine(CreateInitialData()); }
-        finally { IsInitializing = false; }
-        m_ElapsedTimeToPolling = m_PollingInterval;
-        SetUpdateSettings();
+    IEnumerator InitializePlayback()
+    {
+      IsInitializing = true;
+      try { yield return CreateInitialData(); }
+      finally { IsInitializing = false; }
+      if (m_MeshRenderer == null) yield break;
+      m_ElapsedTimeToPolling = m_PollingInterval;
+      SetUpdateSettings();
 #if STM_DEBUG
   #if UNITY_WEBGL
         Debug.Log("STM_DEBUG StreamingMesh uses Update() for tick time updating.");
@@ -137,12 +207,11 @@ namespace StreamingMesh
         Debug.Log("STM_DEBUG StreamingMesh uses OnAudioFilterRead() for tick time updating.");
   #endif
 #endif
-      }
-
     }
 
-    void OnDestroy()
+    void ResetPlaybackData()
     {
+      m_PlaybackGeneration++;
       m_InitializingMeshRenderer?.Dispose();
       m_InitializingMeshRenderer = null;
       if(m_MeshRenderer != null)
@@ -155,6 +224,33 @@ namespace StreamingMesh
         m_Fmp4AudioPlayer.Dispose();
         m_Fmp4AudioPlayer = null;
       }
+      if (m_StreamRoot != null)
+      {
+        Destroy(m_StreamRoot);
+        m_StreamRoot = null;
+      }
+      m_AudioRenderer = null;
+      m_UseFmp4Audio = false;
+      m_StreamPlayListName = "";
+      m_AudioPlayListName = "";
+      m_CurrentStreamPlaylistData = "";
+      m_CurrentAudioPlayListData = "";
+      m_FetchingPlaylists = false;
+      m_PlaybackClockStarted = false;
+      m_AudioSeekRequested = false;
+      m_AudioPlaying = false;
+      IsInitializing = false;
+      m_PollingInterval = 10;
+      m_ElapsedTimeToPolling = 0;
+#if !UNITY_WEBGL
+      m_AudioOffset = 0;
+#endif
+      ConnectionStatus = "Buffering mesh and audio...";
+    }
+
+    void OnDestroy()
+    {
+      ResetPlaybackData();
     }
 
     void Update()
@@ -209,7 +305,7 @@ namespace StreamingMesh
       if (!m_PlaybackClockStarted)
       {
         m_Fmp4AudioPlayer.SetPlaying(false);
-        m_MeshRenderer.UpdateWithTime(m_CurrentTime);
+        m_MeshRenderer.UpdateWithTime(m_CurrentTime - MeshPresentationDelaySeconds);
         if (!m_AudioSeekRequested)
         {
           ConnectionStatus = "Buffering mesh and audio...";
@@ -218,8 +314,9 @@ namespace StreamingMesh
               !m_MeshRenderer.TryGetPlaybackStartTime(out startTime) ||
               m_Fmp4AudioPlayer.State < 1)
             return;
-          m_CurrentTime = startTime;
-          m_Fmp4AudioPlayer.Seek(startTime);
+          m_CurrentTime = Math.Max(m_RequestedStartTime,
+            Math.Max(0.0, startTime + MeshPresentationDelaySeconds));
+          m_Fmp4AudioPlayer.Seek(m_CurrentTime);
           m_AudioSeekRequested = true;
           return;
         }
@@ -240,31 +337,38 @@ namespace StreamingMesh
       }
 
       m_CurrentTime = audioTime;
-      m_MeshRenderer.UpdateWithTime(audioTime);
+      double meshTime = audioTime - MeshPresentationDelaySeconds;
+      m_MeshRenderer.UpdateWithTime(meshTime);
       // A recovered keyframe can start after the paused audio position. Seek to
       // the new common range instead of waiting forever for the missing poses.
       if (!m_AudioPlaying && m_MeshRenderer.TryGetPlaybackStartTime(out double recoveredStart) &&
-          recoveredStart > audioTime + 0.001)
+          recoveredStart > meshTime + 0.001)
       {
         m_Fmp4AudioPlayer.SetPlaying(false);
-        m_Fmp4AudioPlayer.Seek(recoveredStart);
-        m_CurrentTime = recoveredStart;
+        double recoveredAudioTime = Math.Max(0.0, recoveredStart + MeshPresentationDelaySeconds);
+        m_Fmp4AudioPlayer.Seek(recoveredAudioTime);
+        m_CurrentTime = recoveredAudioTime;
         ConnectionStatus = "Recovering at keyframe...";
         return;
       }
       // Pause before exhausting the decoded range; resume with a larger margin.
       double lead = m_AudioPlaying ? 0.05 : Math.Max(StreamingMeshRenderer.ResumeBufferSeconds, m_MeshRenderer.FrameInterval * 2);
-      bool ready = m_MeshRenderer.CanPlayAt(audioTime, lead);
-      m_Fmp4AudioPlayer.SetPlaying(ready);
-      if (ready != m_AudioPlaying)
-        Debug.Log($"StreamingMesh sync: {(ready ? "play" : "buffer")}, audio={audioTime:F3}, mesh={m_MeshRenderer.PresentedTime:F3}, bufferedUntil={m_MeshRenderer.BufferedUntil:F3}");
-      m_AudioPlaying = ready;
+      if (m_DurationSeconds > 0)
+        lead = Math.Min(lead, Math.Max(0.0, m_DurationSeconds - meshTime - m_MeshRenderer.FrameInterval));
+      bool ready = m_MeshRenderer.CanPlayAt(meshTime, lead);
+      bool shouldPlay = ready && m_WantsToPlay;
+      m_Fmp4AudioPlayer.SetPlaying(shouldPlay);
+      if (shouldPlay != m_AudioPlaying)
+        Debug.Log($"StreamingMesh sync: {(shouldPlay ? "play" : "pause")}, audio={audioTime:F3}, meshTarget={meshTime:F3}, mesh={m_MeshRenderer.PresentedTime:F3}, bufferedUntil={m_MeshRenderer.BufferedUntil:F3}");
+      m_AudioPlaying = shouldPlay;
       if (ready) m_PlaybackClockStarted = true;
-      ConnectionStatus = ready ? "Playing / audio and mesh synchronized" : "Buffering / audio paused";
+      ConnectionStatus = ready
+        ? (m_WantsToPlay ? "Playing / audio and mesh synchronized" : "Paused / ready to play")
+        : "Buffering / audio paused";
       if (Debug.isDebugBuild && Time.realtimeSinceStartup >= m_NextSyncLogTime)
       {
         m_NextSyncLogTime = Time.realtimeSinceStartup + 5;
-        Debug.Log($"StreamingMesh sync clock: audio={audioTime:F3}, mesh={m_MeshRenderer.PresentedTime:F3}, bufferedUntil={m_MeshRenderer.BufferedUntil:F3}, playing={ready}, gpu={m_MeshRenderer.IsGpuResident}, pending={m_MeshRenderer.PendingGpuFrameCount}, queued={m_MeshRenderer.EncodedFrameCount}, fps={m_StatsFrames / Math.Max(0.001, m_StatsSeconds):F1}, worstFrameMs={m_StatsWorstFrame * 1000:F1}");
+        Debug.Log($"StreamingMesh sync clock: audio={audioTime:F3}, meshTarget={meshTime:F3}, mesh={m_MeshRenderer.PresentedTime:F3}, bufferedUntil={m_MeshRenderer.BufferedUntil:F3}, playing={ready}, gpu={m_MeshRenderer.IsGpuResident}, pending={m_MeshRenderer.PendingGpuFrameCount}, queued={m_MeshRenderer.EncodedFrameCount}, fps={m_StatsFrames / Math.Max(0.001, m_StatsSeconds):F1}, worstFrameMs={m_StatsWorstFrame * 1000:F1}");
         m_StatsFrames = 0;
         m_StatsSeconds = 0;
         m_StatsWorstFrame = 0;
@@ -414,6 +518,7 @@ namespace StreamingMesh
         }
 
         GameObject rootGameObject = new GameObject("RootGameObject");
+        m_StreamRoot = rootGameObject;
         rootGameObject.transform.SetParent(transform, false);
 
         //Split Meshes
@@ -466,7 +571,7 @@ namespace StreamingMesh
     void SetUpdateSettings()
     {
 #if !UNITY_WEBGL
-      m_AudioSource = gameObject.AddComponent<AudioSource>();
+      if (m_AudioSource == null) m_AudioSource = gameObject.AddComponent<AudioSource>();
 #endif
     }
 
@@ -481,6 +586,7 @@ namespace StreamingMesh
 
     IEnumerator FetchPlayListsCore()
     {
+      int generation = m_PlaybackGeneration;
       List<StreamInfo> streamPlayList = new List<StreamInfo>();
       List<AudioInfo> audioPlayList = new List<AudioInfo>();
       
@@ -488,9 +594,14 @@ namespace StreamingMesh
       {
         HttpWrapper wrapper = new HttpWrapper();
         wrapper.RequestPlaylistDiff<StreamInfo>(GetAbsoluteURL(m_StreamPlayListName), m_CurrentStreamPlaylistData, (list, newData) => {
-          if(list != null) {
+          if(list != null && m_PlaybackGeneration == generation && m_MeshRenderer != null) {
             streamPlayList.AddRange(list);
             m_CurrentStreamPlaylistData = newData;
+            foreach (var item in list)
+              m_DurationSeconds = Math.Max(m_DurationSeconds,
+                item.endTicks > 0 ? item.endTicks / (double)TimeSpan.TicksPerSecond
+                  : item.startTicks / (double)TimeSpan.TicksPerSecond +
+                    m_MeshRenderer.CombinedFrames * m_MeshRenderer.FrameInterval);
           }
         });
         yield return new WaitUntil(wrapper.RequestFinished);
@@ -500,7 +611,7 @@ namespace StreamingMesh
       {
         HttpWrapper wrapper = new HttpWrapper();
         wrapper.RequestPlaylistDiff<AudioInfo>(GetAbsoluteURL(m_AudioPlayListName), m_CurrentAudioPlayListData, (list, newData) => {
-          if(list != null) {
+          if(list != null && m_PlaybackGeneration == generation) {
             audioPlayList.AddRange(list);
             m_CurrentAudioPlayListData = newData;
           }
@@ -514,6 +625,14 @@ namespace StreamingMesh
         if(i <= streamPlayList.Count - 1 && m_MeshRenderer != null) {
           var renderer = m_MeshRenderer;
           var info = streamPlayList[i];
+          // A seek starts at a nearby chunk; older deltas are no longer needed.
+          double chunkEnd = info.endTicks > 0
+            ? info.endTicks / (double)TimeSpan.TicksPerSecond
+            : info.startTicks / (double)TimeSpan.TicksPerSecond +
+              renderer.CombinedFrames * renderer.FrameInterval;
+          if (chunkEnd < m_RequestedStartTime -
+              renderer.CombinedFrames * renderer.FrameInterval)
+            continue;
           // Bound decoded payload memory when joining a long-running channel.
           while (!renderer.CanAcceptChunk)
           {

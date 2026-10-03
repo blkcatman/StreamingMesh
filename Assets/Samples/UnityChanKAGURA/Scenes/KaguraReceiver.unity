@@ -287,8 +287,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::StreamingMesh.Samples.KaguraReceiverControls
   receiverTemplate: {fileID: 2100285118}
-  channelAddress: http://192.168.3.7:8000/channels/channel_KAGURA/
+  channelAddress: http://127.0.0.1:8000/channels/channel_KAGURA/
   connectOnStart: 0
+  autoPlayAfterBuffering: 1
 --- !u!4 &1477258330
 Transform:
   m_ObjectHideFlags: 0
@@ -336,6 +337,7 @@ MonoBehaviour:
   m_ChannelAddress: http://127.0.0.1:8000/channels/channel_KAGURA/
   m_PlaylistName: stream.json
   m_AutoPlay: 1
+  m_AutoPlayAfterBuffering: 1
   m_DefaultShader: {fileID: 4800000, guid: 773a9526fc00fbd4f93eaaa7aaecb19e, type: 3}
   m_CustomShaders:
     list: []

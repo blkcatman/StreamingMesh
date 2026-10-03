@@ -258,6 +258,8 @@ GameObject:
   - component: {fileID: 860876283}
   - component: {fileID: 860876282}
   - component: {fileID: 860876281}
+  - component: {fileID: 860876286}
+  - component: {fileID: 860876285}
   m_Layer: 0
   m_Name: KAGURA Timeline
   m_TagString: Untagged
@@ -279,6 +281,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::StreamingMesh.Samples.KaguraDemoControls
   director: {fileID: 860876282}
   sender: {fileID: 1212962441}
+  playbackClock: {fileID: 860876286}
+  timelineClock: {fileID: 860876285}
 --- !u!320 &860876282
 PlayableDirector:
   m_ObjectHideFlags: 0
@@ -412,6 +416,42 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &860876285
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 860876280}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5723136735704496b02e30fb904725c8, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: TimeWire.Unity::TimeWire.Unity.TimelineClockController
+  source: {fileID: 860876286}
+  director: {fileID: 860876282}
+  mode: 1
+  loop: 0
+  continueWhenLost: 1
+  positionOffsetSeconds: 0
+  hardThresholdSeconds: 1
+  maximumSpeedAdjustment: 0
+  preserveNativeRate: 1
+  correctionTimeSeconds: 2
+--- !u!114 &860876286
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 860876280}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 5ac3c77e14f94fe3836470202192954d, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: TimeWire.Unity::TimeWire.Unity.TransportClockSource
+  source: {fileID: 1212962448}
+  playOnEnable: 1
 --- !u!1 &1212962440
 GameObject:
   m_ObjectHideFlags: 0
@@ -427,6 +467,7 @@ GameObject:
   - component: {fileID: 1212962442}
   - component: {fileID: 1212962441}
   - component: {fileID: 1212962447}
+  - component: {fileID: 1212962448}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -457,6 +498,11 @@ MonoBehaviour:
   maxPendingReadbacks: 8
   tilingShader: {fileID: 7200000, guid: 577158f1a1d7847cb93c561fef93af79, type: 3}
   diffShader: {fileID: 7200000, guid: 9c138f44fe2302e49986b2d6abde71e7, type: 3}
+  useTimeWireClock: 1
+  captureClockSource: {fileID: 1212962448}
+  lastCaptureSeconds: 0
+  missedCaptureSlots: 0
+  captureClockStatus:
 --- !u!114 &1212962442
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -606,6 +652,30 @@ MonoBehaviour:
     m_VarianceClampScale: 0.9
     m_ContrastAdaptiveSharpening: 0
   m_Version: 2
+--- !u!114 &1212962448
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1212962440}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 44aeac73e397848039e52e28168a2ae7, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: TimeWire.Unity::TimeWire.Unity.AudioDspClockSource
+  settings:
+    SoftThresholdSeconds: 0.002
+    HardThresholdSeconds: 0.25
+    MaximumRateAdjustment: 0.01
+    CorrectionTimeSeconds: 1
+    HoldoverAfterSeconds: 0.5
+    LostAfterSeconds: 3
+    LatencyOffsetSeconds: 0
+  state: 0
+  currentTime: 0
+  observationAge: 0
+  observationDrift: 0
 --- !u!1001 &1728982036
 PrefabInstance:
   m_ObjectHideFlags: 0

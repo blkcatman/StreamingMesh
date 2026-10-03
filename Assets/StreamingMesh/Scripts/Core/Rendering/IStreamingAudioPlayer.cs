@@ -19,6 +19,8 @@ namespace StreamingMesh.Core.Rendering
     {
 #if UNITY_WEBGL && !UNITY_EDITOR
       return new WebFmp4AudioPlayer();
+#elif UNITY_ANDROID && !UNITY_EDITOR
+      return new AndroidFmp4AudioPlayer();
 #elif UNITY_IOS || UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
       return new AppleFmp4AudioPlayer();
 #else

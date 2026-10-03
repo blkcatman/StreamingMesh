@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Optimize>true</Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AudioPcmRingBufferTests.cs" />
+    <Compile Include="../../Assets/StreamingMesh/Scripts/Core/Threading/Pcm16RingBuffer.cs" />
+  </ItemGroup>
+</Project>

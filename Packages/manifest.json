@@ -48,6 +48,14 @@
     "com.unity.modules.vehicles": "1.0.0",
     "com.unity.modules.video": "1.0.0",
     "com.unity.modules.wind": "1.0.0",
-    "com.unity.modules.xr": "1.0.0"
-  }
+    "com.unity.modules.xr": "1.0.0",
+    "com.timewire.core": "https://github.com/blkcatman/TimeWire.git?path=/Core#main",
+    "com.timewire.ntp": "https://github.com/blkcatman/TimeWire.git?path=/NTP#main",
+    "com.timewire.osc": "https://github.com/blkcatman/TimeWire.git?path=/OSC#main"
+  },
+  "testables": [
+    "com.timewire.core",
+    "com.timewire.ntp",
+    "com.timewire.osc"
+  ]
 }

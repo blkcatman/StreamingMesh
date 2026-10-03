@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using StreamingMesh.Core.Threading;
 
 namespace StreamingMesh
 {
@@ -25,9 +26,7 @@ namespace StreamingMesh
     [Min(0.25f)] [SerializeField] float targetSegmentDurationSeconds = 1.024f;
     [Range(2, 30)] [SerializeField] int maximumQueuedSeconds = 8;
 
-    readonly object queueLock = new object();
-    readonly Queue<byte[]> pcmQueue = new Queue<byte[]>();
-    readonly AutoResetEvent queueSignal = new AutoResetEvent(false);
+    Pcm16RingBuffer pcmRing;
     readonly HashSet<string> emittedFragments = new HashSet<string>();
     string emittedPlaylist;
 
@@ -51,14 +50,21 @@ namespace StreamingMesh
     string outputDirectory;
     string encoderError;
     int inputSampleRate;
-    int queuedBytes;
     long nextStartSample;
     uint nextSequence;
     bool initEmitted;
     bool queueOverflowed;
     bool overflowReported;
+    bool writerFailed;
     volatile bool stopRequested;
     volatile bool startRecord;
+    public bool TryGetFirstPcmDspTime(out double time)
+    {
+      var ring = Volatile.Read(ref pcmRing);
+      if (ring != null) return ring.TryGetFirstDspTime(out time);
+      time = 0;
+      return false;
+    }
 
     public delegate void Fmp4InitData(string fileName, byte[] data);
     public delegate void Fmp4FragmentData(
@@ -82,6 +88,25 @@ namespace StreamingMesh
     }
     public string OutputDirectory { get { return outputDirectory; } }
 
+    void OnEnable() => AudioSettings.OnAudioConfigurationChanged += OnAudioConfigurationChanged;
+    void OnDisable()
+    {
+      AudioSettings.OnAudioConfigurationChanged -= OnAudioConfigurationChanged;
+      StopCapture();
+    }
+    void OnAudioConfigurationChanged(bool deviceWasChanged)
+    {
+      if (!startRecord) return;
+      StopCapture();
+      UnityEngine.Debug.LogError("StreamingMesh audio configuration changed. Restart recording with the new sample rate.");
+    }
+    void StopCapture()
+    {
+      Stop();
+      var sender = GetComponent<STMHttpSender>();
+      if (sender != null && sender.IsStartRecord) sender.Stop();
+    }
+
     public void Record()
     {
       if (startRecord)
@@ -99,11 +124,6 @@ namespace StreamingMesh
         Guid.NewGuid().ToString("N"));
       Directory.CreateDirectory(outputDirectory);
 
-      lock (queueLock)
-      {
-        pcmQueue.Clear();
-        queuedBytes = 0;
-      }
       emittedFragments.Clear();
       outputRead = null;
       nextOutputPoll = 0;
@@ -113,25 +133,36 @@ namespace StreamingMesh
       initEmitted = false;
       queueOverflowed = false;
       overflowReported = false;
+      Volatile.Write(ref writerFailed, false);
       encoderError = null;
       stopRequested = false;
 
       try
       {
         DisposeProcess();
+        if (inputSampleRate <= 0) throw new InvalidOperationException("Audio output sample rate is unavailable.");
+        int capacity = checked(inputSampleRate * EncodedChannels * BytesPerSample * Math.Max(1, maximumQueuedSeconds));
+        var previousRing = Volatile.Read(ref pcmRing);
+        byte[] storage = previousRing != null && previousRing.IsDrained && previousRing.Storage.Length == capacity
+          ? previousRing.Storage : new byte[capacity];
+        // A fresh wrapper keeps an old callback closed even when its storage is reused.
+        Volatile.Write(ref pcmRing, new Pcm16RingBuffer(storage));
         StartEncoderProcess();
-        startRecord = true;
-        writerThread = new Thread(WritePcmLoop)
+        var sessionRing = pcmRing;
+        var encoder = process;
+        writerThread = new Thread(() => WritePcmLoop(sessionRing, encoder))
         {
           IsBackground = true,
           Name = "StreamingMesh fMP4 audio writer"
         };
+        startRecord = true;
         writerThread.Start();
       }
       catch (Exception exception)
       {
         startRecord = false;
         stopRequested = true;
+        Volatile.Read(ref pcmRing)?.Close();
         DisposeProcess();
         UnityEngine.Debug.LogError("StreamingMesh could not start FFmpeg: " + exception.Message);
       }
@@ -143,7 +174,7 @@ namespace StreamingMesh
         return;
       startRecord = false;
       stopRequested = true;
-      queueSignal.Set();
+      Volatile.Read(ref pcmRing)?.Close();
     }
 
     void StartEncoderProcess()
@@ -190,76 +221,39 @@ namespace StreamingMesh
       if (!startRecord || data == null || data.Length == 0 || channels <= 0)
         return;
 
-      byte[] pcm = ConvertToStereoPcm16(data, channels);
-      int maxQueuedBytes = inputSampleRate * EncodedChannels * BytesPerSample * maximumQueuedSeconds;
-      lock (queueLock)
+      double blockDsp = AudioSettings.dspTime;
+      var ring = Volatile.Read(ref pcmRing);
+      if (ring != null && !ring.TryWrite(data, channels, blockDsp) && !ring.IsClosed)
       {
-        if (queuedBytes + pcm.Length > maxQueuedBytes)
-        {
-          queueOverflowed = true;
-          return;
-        }
-        pcmQueue.Enqueue(pcm);
-        queuedBytes += pcm.Length;
+        // Close immediately so later callbacks cannot resume after a missing block.
+        Volatile.Write(ref queueOverflowed, true);
+        startRecord = false;
+        ring.Close();
       }
-      queueSignal.Set();
     }
 
-    static byte[] ConvertToStereoPcm16(float[] data, int channels)
-    {
-      int frameCount = data.Length / channels;
-      byte[] output = new byte[frameCount * EncodedChannels * BytesPerSample];
-      for (int frame = 0; frame < frameCount; frame++)
-      {
-        float left = data[frame * channels];
-        float right = channels > 1 ? data[frame * channels + 1] : left;
-        WritePcm16(output, frame * 4, left);
-        WritePcm16(output, frame * 4 + 2, right);
-      }
-      return output;
-    }
-
-    static void WritePcm16(byte[] output, int offset, float value)
-    {
-      double clamped = Math.Max(-1.0, Math.Min(1.0, value));
-      short sample = (short)Math.Round(clamped * 32767.0);
-      output[offset] = (byte)sample;
-      output[offset + 1] = (byte)(sample >> 8);
-    }
-
-    void WritePcmLoop()
+    void WritePcmLoop(Pcm16RingBuffer ring, Process encoder)
     {
       try
       {
-        Stream input = process.StandardInput.BaseStream;
+        Stream input = encoder.StandardInput.BaseStream;
         while (true)
         {
-          byte[] pcm = null;
-          lock (queueLock)
-          {
-            if (pcmQueue.Count > 0)
-            {
-              pcm = pcmQueue.Dequeue();
-              queuedBytes -= pcm.Length;
-            }
-          }
-
-          if (pcm != null)
-          {
-            input.Write(pcm, 0, pcm.Length);
-            continue;
-          }
-          if (stopRequested)
-            break;
-          queueSignal.WaitOne(100);
+          if (ring.WriteAvailable(input) != 0) continue;
+          if (ring.IsDrained) break;
+          // Only the writer waits; the audio thread performs no lock/event/syscall.
+          Thread.Sleep(1);
         }
         input.Flush();
-        process.StandardInput.Close();
-        process.WaitForExit();
+        encoder.StandardInput.Close();
+        encoder.WaitForExit();
       }
       catch (Exception exception)
       {
         encoderError = exception.Message;
+        startRecord = false;
+        ring.Close();
+        Volatile.Write(ref writerFailed, true);
       }
     }
 
@@ -267,12 +261,18 @@ namespace StreamingMesh
     {
       PollEncoderOutput();
 
-      if (queueOverflowed && !overflowReported)
+      if (Volatile.Read(ref queueOverflowed) && !overflowReported)
       {
         overflowReported = true;
         UnityEngine.Debug.LogError(
           "StreamingMesh audio PCM queue overflowed. Recording was stopped to avoid A/V drift.");
-        Stop();
+        StopCapture();
+      }
+
+      if (Volatile.Read(ref writerFailed))
+      {
+        Volatile.Write(ref writerFailed, false);
+        StopCapture();
       }
 
       if (!string.IsNullOrEmpty(encoderError))
@@ -381,7 +381,6 @@ namespace StreamingMesh
       if (writerThread != null && writerThread.IsAlive)
         writerThread.Join(500);
       DisposeProcess();
-      queueSignal.Dispose();
     }
 
     void DisposeProcess()

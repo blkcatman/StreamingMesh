@@ -9,6 +9,12 @@ UnityChanKAGURA_URP-release-1.0.1 から、モデル、身体・表情の Timeli
 
 Timeline は約287.6秒。音声開始位置は原版と同じ6.6秒です。身体、目、口、音声を残し、元のステージ・カメラ・UI演出トラックは除いています。固定カメラの簡易デモであり、原版ライブ演出の完全移植ではありません。
 
+## Editor内の同期計測
+
+`Tools > StreamingMesh > KAGURA > Verify Timeline Audio Sync` で `KaguraDemo` を開き、全曲を再生してTime系の時計・deltaTime積算・DSP時計・Director・身体と音声のPlayable時刻を記録します。前半・中盤・後半のAudioListener出力を元クリップの波形と比較でき、LateUpdateからEndOfFrameまでの時間も取得します。録画中は実行できません。通常計測ではシーンや再生時計の設定を変更せず、完了するとPlayモードを終了します。出力先はGit管理対象外の `Logs/KaguraClockComparison_日時/` です。
+
+`python3 Tools/analyze_kagura_clock_comparison.py Logs/KaguraClockComparison_日時` で開始時点のオフセット、ばらつき、時刻差の変化と波形の対応を集計します（NumPyが必要）。`Verify DSP Clock With Hitch` と `Verify Game Clock With Hitch` は40秒の比較試験で、再生20秒付近に意図的な600msのメインスレッド停止を挿入します。時計モードの切り替えはPlayモード中だけで、シーンには保存しません。これはEditor内の時計の計測です。スピーカー・ディスプレイの実出力遅延や、StreamingMeshに収録・配信した後の同期は別途計測が必要です。以前の `Logs/KaguraTimelineSync/` のログは `Tools/analyze_kagura_timeline_sync.py` で解析できます。
+
 ## ローカル録画・受信
 
 1. リポジトリ直下で `python3 Tools/streamingmesh_dev_server.py --port 8000` を起動します。
@@ -57,9 +63,27 @@ Web版は `Tools > StreamingMesh > Build Web KAGURA Receiver` で `Builds/WebRec
 
 Receiverコンポーネントの `Decode Backend` は既定の `Auto` でGPU常駐経路を選択し、非対応時はCPUを使用します。`CPU` を指定すると比較用のCPU経路になります。`Normal Mode` は `Auto` / `None` / `Recalculate` を選べます。現在のUnlitマテリアルではAutoが法線更新を省略します。設定は受信インスタンス作成時に読み込むため、テンプレートを変更して再接続してください。iPhoneへ反映する場合は再ビルドが必要です。設計・制限・検証結果は [Receiver GPU設計](../../../Docs/RECEIVER_GPU_PIPELINE.md) を参照してください。
 
-音声はモデルとメッシュの準備後、先頭メッシュの時刻から開始します。メッシュが不足すると `Buffering / audio paused` と表示して音声も待機し、蓄積後に再開します。途中接続時も先頭から再生するため、現在の送信画面とは遅延があります。
+音声はモデルとメッシュの準備後、先頭メッシュの時刻から開始します。メッシュが不足すると `Buffering / audio paused` と表示して音声も待機し、蓄積後に再開します。途中接続時も先頭から再生するため、現在の送信画面とは遅延があります。Receiver画面には再生・一時停止・停止・前後5秒移動・シークバーを追加しました。シークは指定時刻の直前にあるキーフレームのチャンクからメッシュと音声を再読み込みするため、再生再開前に短いバッファリングが入ります。`Auto-play after initial buffering` は既定で有効で、従来どおりバッファリング後に自動再生します。無効にして接続すると、準備後も一時停止のまま待機します。
 iOS用の上記ビルド処理は、生成した Info.plist にローカルネットワーク利用説明と `NSAllowsLocalNetworking` を追加します。Unity の HTTP 許可は DevelopmentOnly に設定します。通常のHTTPS通信に対するATSは有効です。
 
-今回使用したローカル設定は `DevData/provision-token` に保存しています（Git管理対象外）。Editor再起動時はこの値を環境変数へ再設定してください。過去の検証データは `DevData/channels/kagura_verification/` と `DevData/channels/urp_verification/` に移動しています。
+今回使用したローカル設定は `DevData/provision-token` に保存しています（Git管理対象外）。SenderはEditorで環境変数`STREAMINGMESH_PROVISION_TOKEN`を優先し、未設定ならこのローカルファイルを読みます。過去の検証データは `DevData/channels/kagura_verification/` と `DevData/channels/urp_verification/` に移動しています。
 
 Create Channelは元のテクスチャを再インポートせずにチャンネル用PNGを生成します。大きなテクスチャでは初期化に時間がかかります（KAGURAの確認環境で約10秒）。通常の録画中は、メッシュの結合・圧縮とffmpeg出力ファイルの読み出しをバックグラウンドで処理します。
+
+Receiver画面の `Camera view` からカメラのワールド座標X/Y/ZとY軸回転（Yaw）を調整できます。スライダーまたは位置0.1m・回転5度刻みのボタンを使います。位置は起動時の座標から各軸±20m、回転は起動時の向きから±180度です。Yで高さを変更でき、上下の傾きは維持します。`Reset camera` でシーンの初期位置・向きに戻ります。`Back to playback` で再生操作へ戻れます。調整は再接続でも維持され、アプリの再起動で初期状態に戻ります。同期確認用Receiverでも同じ操作を利用できます。
+
+## Android のリアルタイム受信
+
+Build ProfilesでAndroidを選択し、`Tools > StreamingMesh > Build Android KAGURA Receiver`を実行すると、開発用APKが`Builds/AndroidKaguraReceiver.apk`に生成されます。ARM64・IL2CPPのビルドです。AndroidX Media3のExoPlayerを使用してfMP4 HLS音声を再生し、その再生位置をメッシュの同期クロックにします。初回ビルドはMedia3のGradle依存関係を取得するため、ネットワーク接続が必要です。
+
+ローカルHTTP配信の検証のため、Android Manifestは平文HTTPを許可しています。外部公開用ビルドではHTTPS配信に切り替え、Manifestの設定も見直してください。
+
+USB接続の実機でMacのローカルサーバーを使う場合は、端末でUSBデバッグを許可し、`adb reverse tcp:8000 tcp:8000`を実行します。これでReceiverの既定URLである`http://127.0.0.1:8000/channels/channel_KAGURA/`をそのまま使用できます。`adb install -r Builds/AndroidKaguraReceiver.apk`でAPKを入れ、送信側でCreate Channel、Record from startを実行した後、端末のConnect / Reconnectを押します。EditorでのSender操作は`Tools > StreamingMesh > KAGURA`からも実行できます。USBを外してWi-Fiで受信する場合は、iOSと同じLAN公開・URL設定が必要です。
+
+音と動きのずれを実機で確認するには、受信画面の`Mesh delay`を使用します。`+50 ms`はメッシュ表示を音声時計より50ミリ秒遅らせ、`-50 ms`は50ミリ秒早めます。変更時は先頭から再接続します。既定値は0で、音声・メッシュの配信時刻をそのまま対応させます。これは端末の音声出力経路などによる知覚上の一定のずれを調べるための調整値です。
+
+Media3は[Apache License 2.0](../../../Docs/MEDIA3_LICENSE_APACHE_2.0.txt)です。StreamingMesh本体のMITライセンス、UnityChan素材のUCLとは別の依存ライブラリとして扱います。
+
+## TimeWire local clock integration
+
+The Sender now assigns `TimeWire.Unity.AudioDspClockSource` to its capture reference. Its first recorded PCM block establishes mesh/audio time zero, and capture deadlines no longer accumulate `Time.deltaTime`. The Timeline uses **DSPClock** with a TimeWire Transport and **Preserve Native Rate** enabled: graph speed correction is disabled for this AudioTrack. The sample's Play/Pause/Restart controls operate the Transport. Hard corrections can reschedule audio, so PCM validation is required; this does not calibrate native speaker/display delay or AAC priming. See [local validation results](../../../Docs/TIMEWIRE_LOCAL_VALIDATION.md) for the 600 ms hitch test, full-song clock/PCM measurements, and 60 fps diagnostic captures.

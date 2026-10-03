@@ -6,6 +6,8 @@ using System.Text;
 using UnityEngine;
 using UnityEngine.Rendering;
 using StreamingMesh.Core.Serialization;
+using TimeWire;
+using TimeWire.Unity;
 
 namespace StreamingMesh
 {
@@ -147,7 +149,7 @@ namespace StreamingMesh
 
     STMHttpSerializer serializer;
     STMAudioRecorder audioRecorder;
-    readonly List<SkinnedMeshRenderer> renderers = new List<SkinnedMeshRenderer>();
+    readonly List<Renderer> renderers = new List<Renderer>();
     EncoderBuffers[] encoderBuffers;
     Matrix4x4[] oldMatrices;
     readonly List<int> linedIndices = new List<int>();
@@ -162,6 +164,26 @@ namespace StreamingMesh
     bool startRecord;
     bool captureScheduled;
     float currentTime;
+    [Header("Capture clock")]
+    [Tooltip("Use absolute TimeWire deadlines. Disable only for comparison with the legacy deltaTime scheduler.")]
+    public bool useTimeWireClock = true;
+    [Tooltip("Optional reference. With no source, use a local monotonic clock. Audio DSP Clock Source aligns mesh zero with the first recorded PCM block.")]
+    public ClockSourceBehaviour captureClockSource;
+    IClockSource recordClock;
+    FrameSchedule captureSchedule;
+    ClockTime recordOrigin;
+    long clockGeneration;
+    bool waitingForAudioOrigin;
+    bool recordingWithTimeWire;
+    AudioDspClockSource recordDspSource;
+    [SerializeField] double lastCaptureSeconds;
+    [SerializeField] long missedCaptureSlots;
+    [SerializeField] string captureClockStatus;
+    public double LastCaptureSeconds => lastCaptureSeconds;
+    public long MissedCaptureSlots => missedCaptureSlots;
+    public string CaptureClockStatus => captureClockStatus;
+    public bool IsTimeWireRecording => startRecord && recordingWithTimeWire;
+    public event Action<ClockTime> BeforeCapture;
     int frameCount;
     uint timeStamp;
     long temporaryStartTicks;
@@ -259,6 +281,27 @@ namespace StreamingMesh
 
       if (!startRecord)
       {
+        audioRecorder = GetComponent<STMAudioRecorder>();
+        recordingWithTimeWire = useTimeWireClock;
+        recordDspSource = captureClockSource as AudioDspClockSource;
+        if (recordingWithTimeWire)
+        {
+          recordClock = captureClockSource != null ? (IClockSource)captureClockSource : new HybridClock(new StopwatchClock());
+          ClockSnapshot snapshot = recordClock.GetSnapshot();
+          if (!snapshot.IsAvailable || snapshot.RateRatio.IsZero)
+          {
+            captureClockStatus = "Waiting for capture clock";
+            Debug.LogWarning("StreamingMesh capture clock is not available. Start recording after it locks.");
+            return;
+          }
+          clockGeneration = snapshot.Generation;
+          recordOrigin = snapshot.Time;
+          captureSchedule = NewCaptureSchedule(recordOrigin);
+        }
+        waitingForAudioOrigin = false;
+        lastCaptureSeconds = 0;
+        missedCaptureSlots = 0;
+        captureClockStatus = useTimeWireClock ? "TimeWire" : "Legacy deltaTime";
         startRecord = true;
         captureGeneration++;
         recordStartRealtime = Time.realtimeSinceStartupAsDouble;
@@ -279,11 +322,13 @@ namespace StreamingMesh
         readbackFailureLogged = false;
 
 #if UNITY_EDITOR
-        // Establish the mesh clock first, then start the persistent audio encoder
-        // in the same main-thread turn. This keeps their startup offset bounded to
-        // the next audio DSP buffer instead of allowing audio to lead the mesh.
         if (audioRecorder != null)
+        {
           audioRecorder.Record(combinedFrames * FrameInterval);
+          if (!audioRecorder.IsStartRecord) { Stop(); return; }
+          waitingForAudioOrigin = recordingWithTimeWire && recordDspSource != null;
+          if (waitingForAudioOrigin) captureClockStatus = "Waiting for first PCM block";
+        }
 #endif
       }
     }
@@ -336,6 +381,18 @@ namespace StreamingMesh
       }
     }
 
+    static Mesh GetSourceMesh(Renderer renderer)
+    {
+      if (renderer is SkinnedMeshRenderer skinned)
+        return skinned.sharedMesh;
+      if (renderer is MeshRenderer meshRenderer)
+      {
+        MeshFilter filter = meshRenderer.GetComponent<MeshFilter>();
+        return filter != null ? filter.sharedMesh : null;
+      }
+      return null;
+    }
+
     void InitializeSender()
     {
       serializer = GetComponent<STMHttpSerializer>();
@@ -347,8 +404,8 @@ namespace StreamingMesh
         return;
       }
 
-      renderers.AddRange(targetGameObject.GetComponentsInChildren<SkinnedMeshRenderer>(true));
-      renderers.RemoveAll(renderer => renderer == null || renderer.sharedMesh == null);
+      renderers.AddRange(targetGameObject.GetComponentsInChildren<Renderer>(true));
+      renderers.RemoveAll(renderer => GetSourceMesh(renderer) == null);
       if (renderers.Count > MaxMeshCount)
       {
         Debug.LogError("StreamingMesh format supports at most 256 meshes.");
@@ -388,11 +445,11 @@ namespace StreamingMesh
 
       for (int i = 0; i < renderers.Count; i++)
       {
-        SkinnedMeshRenderer renderer = renderers[i];
+        Renderer renderer = renderers[i];
         if (renderer == null)
           continue;
 
-        MeshInfo meshInfo = serializer.CreateMeshInfo(renderer);
+        MeshInfo meshInfo = serializer.CreateMeshInfo(renderer, GetSourceMesh(renderer));
         if (meshInfo == null)
           continue;
         meshInfos.Add(meshInfo);
@@ -495,19 +552,33 @@ namespace StreamingMesh
       if (!Application.isPlaying || !startRecord || !computeReady)
         return;
 
-      currentTime += Time.deltaTime;
-      if (currentTime < FrameInterval)
-        return;
-
-      // Holding the capture clock here is intentional. In production mode we
-      // prefer latency over silently dropping a keyframe dependency chain.
+      if (!recordingWithTimeWire) currentTime += Time.deltaTime;
       if (pendingFrames.Count >= maxPendingReadbacks || pendingChunks.Count >= 2)
         return;
-
-      currentTime -= FrameInterval;
-
       if (captureScheduled)
         return;
+
+      if (recordingWithTimeWire)
+      {
+        if (!TryReadCaptureClock(out ClockSnapshot snapshot)) return;
+#if UNITY_EDITOR
+        if (waitingForAudioOrigin)
+        {
+          if (!audioRecorder.TryGetFirstPcmDspTime(out double firstPcm)) return;
+          recordOrigin = recordDspSource.FromDspTime(firstPcm);
+          captureSchedule = NewCaptureSchedule(recordOrigin);
+          waitingForAudioOrigin = false;
+        }
+#endif
+        captureClockStatus = snapshot.State.ToString();
+        if (!captureSchedule.TryTakeDue(snapshot.Time, out _, out long missed)) return;
+        missedCaptureSlots += missed;
+      }
+      else
+      {
+        if (currentTime < FrameInterval) return;
+        currentTime -= FrameInterval;
+      }
 
       captureScheduled = true;
       StartCoroutine(CaptureFrameAtEndOfFrame(frameCount == 0, captureGeneration));
@@ -524,13 +595,47 @@ namespace StreamingMesh
 
       // Capture after all LateUpdate callbacks so spring bones and other
       // post-animation deformation have been applied before BakeMesh().
-      EncodeFrame(isKeyframe);
+      long ptsTicks;
+      if (recordingWithTimeWire)
+      {
+        if (!TryReadCaptureClock(out ClockSnapshot snapshot)) yield break;
+        // Consumers can evaluate a procedural pose at precisely this capture time.
+        BeforeCapture?.Invoke(snapshot.Time);
+        ptsTicks = snapshot.Time.Subtract(recordOrigin).ToTicks(new ClockTimebase(TimeSpan.TicksPerSecond));
+      }
+      else
+        ptsTicks = (long)((Time.realtimeSinceStartupAsDouble - recordStartRealtime) * TimeSpan.TicksPerSecond);
+      lastCaptureSeconds = ptsTicks / (double)TimeSpan.TicksPerSecond;
+      EncodeFrame(isKeyframe, ptsTicks);
     }
 
-    void EncodeFrame(bool isKeyframe)
+    FrameSchedule NewCaptureSchedule(ClockTime origin) =>
+      new FrameSchedule(origin, checked((int)Math.Round(Math.Max(0.1, frameRate) * 1000)), 1000);
+
+    bool TryReadCaptureClock(out ClockSnapshot snapshot)
     {
+      snapshot = recordClock.GetSnapshot();
+      if (!snapshot.IsAvailable || snapshot.RateRatio.IsZero || snapshot.Generation != clockGeneration)
+      {
+        captureClockStatus = "Capture stopped: clock unavailable or discontinuous";
+        Debug.LogWarning("StreamingMesh stopped recording because its capture clock changed or became unavailable.");
+        Stop();
+        return false;
+      }
+      return true;
+    }
+
+    static readonly Unity.Profiling.ProfilerMarker encodeFrameMarker = new Unity.Profiling.ProfilerMarker("StreamingMesh.Sender.EncodeFrame");
+    static readonly Unity.Profiling.ProfilerMarker bakeMeshMarker = new Unity.Profiling.ProfilerMarker("StreamingMesh.Sender.BakeMesh");
+    static readonly Unity.Profiling.ProfilerMarker readbackMarker = new Unity.Profiling.ProfilerMarker("StreamingMesh.Sender.Readback");
+    static readonly Unity.Profiling.ProfilerMarker commitFrameMarker = new Unity.Profiling.ProfilerMarker("StreamingMesh.Sender.CommitFrame");
+    static readonly Unity.Profiling.ProfilerMarker flushMarker = new Unity.Profiling.ProfilerMarker("StreamingMesh.Sender.FlushChunk");
+    static readonly Unity.Profiling.ProfilerMarker publishMarker = new Unity.Profiling.ProfilerMarker("StreamingMesh.Sender.PublishChunk");
+
+    void EncodeFrame(bool isKeyframe, long ptsTicks)
+    {
+      using var profile = encodeFrameMarker.Auto();
       uint sequence = timeStamp++;
-      long ptsTicks = (long)((Time.realtimeSinceStartupAsDouble - recordStartRealtime) * TimeSpan.TicksPerSecond);
       PendingEncodeFrame frame = new PendingEncodeFrame(
         sequence,
         isKeyframe,
@@ -542,11 +647,12 @@ namespace StreamingMesh
 
       for (int meshIndex = 0; meshIndex < renderers.Count; meshIndex++)
       {
-        SkinnedMeshRenderer renderer = renderers[meshIndex];
-        if (renderer == null || renderer.sharedMesh == null)
+        Renderer renderer = renderers[meshIndex];
+        Mesh sourceMesh = GetSourceMesh(renderer);
+        if (sourceMesh == null)
           continue;
 
-        int vertexCount = renderer.sharedMesh.vertexCount;
+        int vertexCount = sourceMesh.vertexCount;
         if (vertexCount <= 0 || vertexCount > MaxVertexCount)
         {
           Debug.LogError("StreamingMesh mesh '" + renderer.name + "' exceeds the 16-bit vertex index limit.");
@@ -568,9 +674,15 @@ namespace StreamingMesh
           continue;
         }
 
-        renderer.BakeMesh(buffers.bakedMesh);
+        Mesh captureMesh;
+        if (renderer is SkinnedMeshRenderer skinned)
+        {
+          using (bakeMeshMarker.Auto()) skinned.BakeMesh(buffers.bakedMesh);
+          captureMesh = buffers.bakedMesh;
+        }
+        else captureMesh = sourceMesh;
         buffers.vertices.Clear();
-        buffers.bakedMesh.GetVertices(buffers.vertices);
+        captureMesh.GetVertices(buffers.vertices);
         if (buffers.vertices.Count != vertexCount)
           continue;
         buffers.source.SetData(buffers.vertices);
@@ -644,6 +756,7 @@ namespace StreamingMesh
       int vertexCount,
       AsyncGPUReadbackRequest request)
     {
+      using var profile = readbackMarker.Auto();
       if (generation != captureGeneration)
         return;
 
@@ -679,6 +792,7 @@ namespace StreamingMesh
       int vertexCount,
       AsyncGPUReadbackRequest request)
     {
+      using var profile = readbackMarker.Auto();
       if (generation != captureGeneration)
         return;
 
@@ -736,6 +850,7 @@ namespace StreamingMesh
 
     void CommitFrame(PendingEncodeFrame frame)
     {
+      using var profile = commitFrameMarker.Auto();
       Dictionary<int, TilePacker> tilePacks = frame.isKeyframe
         ? new Dictionary<int, TilePacker>()
         : null;
@@ -847,6 +962,7 @@ namespace StreamingMesh
 
     void FlushCombinedFrames()
     {
+      using var profile = flushMarker.Auto();
       if (byteSizes.Count == 0)
         return;
 
@@ -890,6 +1006,7 @@ namespace StreamingMesh
 
     void PublishCompletedChunks()
     {
+      using var profile = publishMarker.Auto();
       while (pendingChunks.Count > 0 && pendingChunks.Peek().compression.IsCompleted)
       {
         var chunk = pendingChunks.Dequeue();

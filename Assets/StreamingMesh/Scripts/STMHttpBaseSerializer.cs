@@ -191,9 +191,13 @@ namespace StreamingMesh {
 #if UNITY_EDITOR
 
 		string GetRequestToken(bool usePushToken) {
-			return usePushToken
-				? channelPushToken
-				: Environment.GetEnvironmentVariable(ProvisionTokenEnvironmentVariable);
+			if (usePushToken) return channelPushToken;
+			string token = Environment.GetEnvironmentVariable(ProvisionTokenEnvironmentVariable);
+			if (!String.IsNullOrEmpty(token)) return token;
+			// The local development server token is gitignored. This also works when
+			// Unity was launched from Hub without inheriting the shell environment.
+			string tokenPath = Path.Combine(Directory.GetCurrentDirectory(), "DevData/provision-token");
+			return File.Exists(tokenPath) ? File.ReadAllText(tokenPath).Trim() : "";
 		}
 
 		void ReadChannelPushToken(string json) {

@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.Playables;
+using TimeWire.Unity;
 
 namespace StreamingMesh.Samples
 {
@@ -8,10 +9,19 @@ namespace StreamingMesh.Samples
     {
         public PlayableDirector director;
         public STMHttpSender sender;
+        public TransportClockSource playbackClock;
+        public TimelineClockController timelineClock;
 
         public void Restart()
         {
             if (director == null || (sender != null && sender.IsStartRecord)) return;
+            if (playbackClock != null && timelineClock != null)
+            {
+                playbackClock.Stop();
+                playbackClock.Play();
+                timelineClock.SynchronizeNow();
+                return;
+            }
             director.Stop();
             director.time = 0;
             director.Play();
@@ -26,9 +36,15 @@ namespace StreamingMesh.Samples
             GUILayout.Label($"{director.time:F1} / {director.duration:F1} s");
             bool recording = sender != null && sender.IsStartRecord;
             GUI.enabled = !recording;
-            if (GUILayout.Button(director.state == PlayState.Playing ? "Pause" : "Play"))
+            bool playing = playbackClock != null ? playbackClock.IsPlaying : director.state == PlayState.Playing;
+            if (GUILayout.Button(playing ? "Pause" : "Play"))
             {
-                if (director.state == PlayState.Playing) director.Pause();
+                if (playbackClock != null)
+                {
+                    if (playbackClock.IsPlaying) playbackClock.Pause();
+                    else playbackClock.Play();
+                }
+                else if (director.state == PlayState.Playing) director.Pause();
                 else director.Play();
             }
             if (GUILayout.Button("Restart")) Restart();
@@ -51,6 +67,7 @@ namespace StreamingMesh.Samples
 
         void OnDisable()
         {
+            if (playbackClock != null) playbackClock.Pause();
             if (sender != null && sender.IsStartRecord) sender.Stop();
         }
     }
