@@ -170,10 +170,61 @@ python Tools/streamingmesh_dev_server.py --web-root Builds/WebReceiverMemoryTrac
 
 `STM_GROW` は拡張直前の容量、要求容量、拡張後の容量、直前の診断段階、呼出スタックを記録する。生成済みのframework.jsだけを変更し、想定する拡張処理が見つからなければ中止する。`seconds` はブラウザのperformance時刻で、`STM_MEM` のUnity起動後時刻とは基準が異なる。段階は直前のチェックポイントなので、処理がUnity内部へ遅延された場合は呼出スタックと併せて判断する。チャンク展開の前後のチェックポイントはWebビルドで記録する。
 
-2026-10-04、同じKAGURA ID収録をUnity 6000.5.10f1／URP 17.5のWebGPU Receiverで測定。最初の `Body_Base` の `LoadImage` 前後で、WASM容量は228,982,784 B（218.4 MiB）から744,423,424 B（709.9 MiB）へ増加し、使用量は169,335,520 Bから169,335,208 Bへ戻った。呼出中に3回の拡張要求を確認した。最終ビルドの寸法ログでも8192×8192、Mip数1を確認。PNG入力は8,863,800 Bだが、展開画像はRGBA換算で256 MiBとなる。同サイズのPNGは6枚あり、残り14枚は2048×2048。大きな拡張は画像ロード中の一時確保に対応するが、デコード・転送・Unity内部作業領域の個別内訳と瞬間的な全使用量は未測定。
+2026-10-04、同じKAGURA ID収録をUnity 6000.5.10f1／URP 17.5のWebGPU Receiverで測定。最初の `Body_Base` の `LoadImage` 前後で、WASM容量は228,982,784 B（218.4 MiB）から744,423,424 B（709.9 MiB）へ増加し、使用量は169,335,520 Bから169,335,208 Bへ戻った。呼出中に3回の拡張要求を確認した。最終ビルドの寸法ログでも8192×8192、Mip数1を確認。PNG入力は8,863,800 Bだが、展開画像はRGBA換算で256 MiBとなる。同サイズのPNGは5枚あり、残り15枚は2048×2048。大きな拡張は画像ロード中の一時確保に対応するが、デコード・転送・Unity内部作業領域の個別内訳と瞬間的な全使用量は未測定。
 
 チャンクプール容量は68,222,976 B、同時保持データの最大値は68,190,306 B（約99.95%）、同時貸出最大3／4スロット。4番目のバイト配列は未確保だった。GPU転送配列は8,527,464 B、GPUプール33,331,848 B、CPU頂点配列563,736 B。GPUの保持最大18スロットと入力最大123,900 Bも記録した。これらのプール容量だけでは画像ロードによる約492 MiBの拡張を説明できない。
 
 診断有効で音声時刻287.592秒まで同期再生し、エラー／OOMは0件。2秒間隔のWASM容量最大1,075,380,224 B（1025.6 MiB）、使用量最大428,257,368 B（408.4 MiB）。管理ヒープ容量最大328,433,664 B（313.2 MiB）。ログ生成による割り当てとGCタイミングの差を含み、前節の診断無効時の性能値と直接比較しない。診断無効ではCPU/GPU復元・表示の既存266項目で測定区間の割り当て0 Bを維持し、バッファの使用量カウンターを含む180,563項目も通過した。
 
 詳細はローカルの `Logs/KaguraReceiver-memory-trace-snapshots.jsonl`、`Logs/KaguraReceiver-memory-trace-metrics.jsonl`、`Logs/KaguraReceiver-memory-trace-summary.json`。コンソール履歴には保持数の制限があるため、初期から中間で取得したスナップショットと終端のスナップショットを統合した。画像寸法を追加した最終ビルドの初期ログは `Logs/KaguraReceiver-memory-trace-final-console.json`。実行画面は `Logs/KaguraReceiver-memory-trace-WebGPU.png`。
+
+
+## GPU圧縮テクスチャの書き出し・直接アップロード検証（2026-10-04）
+
+独立した検証プロジェクトをWindowsのUnity 6000.5.10f1で生成し、DXT1（BC1）、DXT5（BC3）、BC7、ETC2 RGB、ETC2 RGBA8、ASTC 4×4、ASTC 6×6の7形式を `EditorUtility.CompressTexture` で書き出した。各形式にsRGB／Linearの48×48画像を用意し、RGB専用形式以外は透過アルファも変化させる。実形式・Mip数・ブロックから求めたバイト数を照合し、14個すべて成功した。出力はコンテナのヘッダーを含まない圧縮ブロックと、寸法・形式・sRGB／Linearのメタデータ。
+
+受信テストは独立して生成したTextureへ `LoadRawTextureData` → `Apply(false, true)` でアップロードし、GPUで元画像と圧縮画像を描画してreadbackする。LinearプロジェクトでsRGB／UNormの実GraphicsFormatまで照合し、圧縮状態・寸法・Mip数1・CPU画素非保持を確認する。ロスのある圧縮なので、RGBA各成分のbyte差で平均8以下・最大64以下を許容した。GPU非対応形式をRGBAへ展開した結果は直接ロードの成功に数えない。
+
+| 形式 | Windows Editorから書き出し | D3D11の直接描画 | ブラウザWebGPUの直接描画 |
+| --- | --- | --- | --- |
+| DXT1 / BC1 | 成功 | 成功 | 成功 |
+| DXT5 / BC3 | 成功 | 成功 | 成功 |
+| BC7 | 成功 | 成功 | 成功 |
+| ETC2 RGB | 成功 | 非対応 | 非対応 |
+| ETC2 RGBA8 | 成功 | 非対応 | 非対応 |
+| ASTC 4×4 | 成功 | 非対応 | 非対応 |
+| ASTC 6×6 | 成功 | 非対応 | 非対応 |
+
+GPUはRTX 4090 Laptop GPU。sRGB／Linearの6ケースでD3D11・WebGPUのreadback誤差が一致し、いずれも通過した。ETC2／ASTCは `SupportsTextureFormat` と `IsFormatSupported(..., Sample)` で非対応を確認し、アップロードを実行しない。対応するモバイルGPU・WebGL 2・Unity 6000.6.3f1での実描画は未検証。
+
+### KAGURAの8K Body_BaseとWASMメモリ
+
+元の `Body_Base.png`（8192×8192、9,543,528 B）をBC7へ書き出し、64 MiBの圧縮ブロックをHTTPで受信した。D3D11とWebGPU双方で実形式 `RGBA_BC7_SRGB`、Mip数1、CPU画素非保持を確認。48×48へ縮小したGPU readbackは元PNGとの差が平均0.066／255、最大6だった。PNGの対照描画は差0。以下は同一Webビルドを各経路で新規ロードした測定で、ブラウザのエラー／OOMはすべて0件。
+
+| 8Kロード経路 | 入力 | WASM確保済み容量の最大観測値 | 終了後のWASM使用量 | 管理ヒープ使用量 |
+| --- | ---: | ---: | ---: | ---: |
+| PNG `LoadImage` | 9.10 MiB | 677.7 MiB | 58.9 MiB | 10.1 MiB |
+| BC7、`downloadHandler.data` の全量管理配列コピー | 64 MiB | 310.4 MiB | 114.2 MiB | 65.0 MiB |
+| BC7、受信バッファのNativeArray参照 | 64 MiB | 179.1 MiB | 49.4 MiB | 1.0 MiB |
+
+最終行は `downloadHandler.nativeData.CopyTo(texture.GetRawTextureData<byte>())` → `Apply(false, true)`。受信バッファの参照はDownloadHandlerが生存している間だけ借り、独自にDisposeしない。TextureのCPUバッファへ同期コピーし、Apply後はそのCPUバッファを破棄する。64 MiBの管理byte配列とPNG展開を避け、WASM容量の最大観測値はPNG比73.6%減った。GPUへのゼロコピーではなく、受信バッファとアップロード前のTexture用ネイティブ領域は必要。HTTP、Texture生成、診断ログ、検証用readbackの割り当てまでゼロにした測定ではない。
+
+容量はチェックポイント、ヒープ拡張イベント、2秒間隔のUnityメトリクスから得た最大値。使用量はStartコルーチン終了から5フレーム後、明示GCを呼んだチェックポイントの値で、GCの回収完了や定常値の保証ではない。PNGの呼出中は一時領域が解放されるため、前後の使用量だけから瞬間的な使用量のピークは求めない。配信PNGと元PNGはエンコードされたバイト数が違い、Receiver全体のKAGURA再生結果との直接比較ではない。
+
+### 再現と本実装の制約
+
+```powershell
+./Tools/Tests/verify_texture_compression.ps1 -EditorPath 'C:/Program Files/Unity/Hub/Editor/6000.5.10f1/Editor/Unity.exe'
+python Tools/Tests/instrument_web_receiver.py Builds/TextureCompressionProbe/index.html --trace-growth
+python Tools/streamingmesh_dev_server.py --host 127.0.0.1 --port 8001 --web-root Builds/TextureCompressionProbe
+```
+
+ブラウザで `/viewer/?channel=probe&mode=matrix`、`mode=bc7`、`mode=bc7-native`、`mode=png` をそれぞれ新規ロードする。`STM_TEX_EXPORT`、`STM_TEX_RESULT`、`STM_TEX_SUMMARY`、`STM_TEX_MEM` と `STM_GROW` を記録する。ページの `#texture-probe-result` に結果JSONも表示する。コンソール履歴の最新の `STM_TEX_MEM` のstage=start以降を `Logs/TextureCompression-WebGPU-{mode}-console.json`、結果JSONを同名の `-results.json` へ保存した後、次を実行する。
+
+```powershell
+python Tools/Tests/summarize_texture_compression.py
+```
+
+集計は `Logs/TextureCompression-summary.json`、ネイティブ結果は `Logs/TextureCompression-native-results.json`、Editorログは `Logs/TextureCompression-verification.log`。画面は `Logs/TextureCompression-WebGPU-matrix.png` と `Logs/TextureCompression-WebGPU-bc7-native.png`。出力ファイルは `Builds/TextureCompressionProbe/payload`、48×48の各形式は検証プロジェクトの `Assets/Resources/*.bytes` にある。検証コードはToolsだけに追加し、本番のSender／Receiverとstream.binのPNG形式は変更していない。
+
+KAGURA ID配信のPNGヘッダーを読み直すと8Kは5枚、2Kは15枚だったため、初期ロード診断節の枚数を訂正した。すべてをMipなしBC7へ置き換えるだけでも圧縮ブロックは合計380 MiBとなり、現在の初期データ展開上限128 MiBを超える。実装時は全Textureを単一stream.binへまとめる方式の見直し、個別リソースの配信、対応形式の選択とメタデータ（形式・寸法・Mip・sRGB等）の検証が必要。小さいfixtureで書き出せたことだけではETC2／ASTCの実機ロードやKAGURA全体のメモリ削減を保証しない。
