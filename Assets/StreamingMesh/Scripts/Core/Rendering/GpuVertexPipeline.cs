@@ -8,6 +8,7 @@ namespace StreamingMesh.Core.Rendering
 {
   public enum ReceiverDecodeBackend { Auto, GPU, CPU }
   public enum ReceiverNormalMode { Auto, None, Recalculate }
+  public enum ReceiverTangentMode { Auto, None, Recalculate }
 
   /// <summary>Ordered graphics-queue decode, bounded snapshots and direct Mesh GPU output.</summary>
   public sealed class GpuVertexPipeline : IDisposable
@@ -44,12 +45,14 @@ namespace StreamingMesh.Core.Rendering
     {
       public Mesh mesh;
       public GraphicsBuffer buffer;
-      public ComputeBuffer triangles, faces, offsets, adjacency;
-      public int count, globalOffset, stride, normalOffset, faceCount;
+      public ComputeBuffer triangles, faces, offsets, adjacency, uvCoefficients, faceTangents, faceBitangents;
+      public int count, globalOffset, stride, normalOffset, tangentOffset, faceCount;
+      public bool normals, tangents;
       public void Dispose()
       {
         buffer?.Dispose(); triangles?.Dispose(); faces?.Dispose();
         offsets?.Dispose(); adjacency?.Dispose();
+        uvCoefficients?.Dispose(); faceTangents?.Dispose(); faceBitangents?.Dispose();
       }
     }
 
@@ -59,18 +62,29 @@ namespace StreamingMesh.Core.Rendering
     readonly int[] m_Offsets, m_Counts;
     readonly bool[] m_Seen;
     readonly int m_Count, m_PackageSize, m_ContainerSize, m_MaxInputBytes;
-    readonly bool m_Normals;
     ComputeShader m_Shader;
     ComputeBuffer m_State, m_PackedIndices, m_MeshOffsets;
     int m_KeyKernel, m_DeltaKernel, m_CopyKernel, m_PresentKernel, m_FaceKernel, m_NormalKernel;
+    int m_FaceTangentKernel, m_VertexTangentKernel;
     bool m_HasKeyframe, m_Disposed;
     Bounds m_Bounds;
     public int Capacity { get { return m_Frames.Count; } }
     public long PoolBytes { get; private set; }
+    public long ModelBytes { get; private set; }
+    public long TangentBytes { get; private set; }
 
     public GpuVertexPipeline(IList<Mesh> meshes, int packageSize, int containerSize,
       int requestedSlots, bool recalculateNormals, long poolBudgetBytes = 64L * 1024 * 1024)
+      : this(meshes, packageSize, containerSize, requestedSlots,
+          UniformFlags(meshes.Count, recalculateNormals), new bool[meshes.Count], poolBudgetBytes) { }
+
+    public GpuVertexPipeline(IList<Mesh> meshes, int packageSize, int containerSize,
+      int requestedSlots, bool[] recalculateNormals, bool[] recalculateTangents,
+      long poolBudgetBytes = 64L * 1024 * 1024)
     {
+      if (recalculateNormals == null || recalculateTangents == null ||
+          recalculateNormals.Length != meshes.Count || recalculateTangents.Length != meshes.Count)
+        throw new ArgumentException("Vertex requirements must match the mesh count.");
       if (!SystemInfo.supportsComputeShaders)
         throw new NotSupportedException("Compute shaders are required.");
 #if UNITY_WEBGL && !UNITY_EDITOR
@@ -82,7 +96,7 @@ namespace StreamingMesh.Core.Rendering
 #endif
       if (packageSize < 2 || packageSize > 254 || containerSize < 1 || meshes.Count > 256)
         throw new ArgumentException("Invalid channel quantization or mesh count.");
-      m_PackageSize = packageSize; m_ContainerSize = containerSize; m_Normals = recalculateNormals;
+      m_PackageSize = packageSize; m_ContainerSize = containerSize;
       m_Offsets = new int[meshes.Count]; m_Counts = new int[meshes.Count];
       for (int i=0; i<meshes.Count; i++)
       {
@@ -111,8 +125,13 @@ namespace StreamingMesh.Core.Rendering
         m_PresentKernel = m_Shader.FindKernel("Present");
         m_FaceKernel = m_Shader.FindKernel("FaceNormals");
         m_NormalKernel = m_Shader.FindKernel("VertexNormals");
+        m_FaceTangentKernel = m_Shader.FindKernel("FaceTangents");
+        m_VertexTangentKernel = m_Shader.FindKernel("VertexTangents");
         foreach (int k in new[] {m_KeyKernel,m_DeltaKernel,m_CopyKernel,m_PresentKernel,m_FaceKernel,m_NormalKernel})
           if (!m_Shader.IsSupported(k)) throw new NotSupportedException("Receiver compute kernel is unsupported.");
+        if (Array.Exists(recalculateTangents, value => value) &&
+            (!m_Shader.IsSupported(m_FaceTangentKernel) || !m_Shader.IsSupported(m_VertexTangentKernel)))
+          throw new NotSupportedException("Receiver tangent kernels are unsupported.");
         m_State = new ComputeBuffer(m_Count, 16);
         m_PackedIndices = new ComputeBuffer(m_Count, 4);
         m_MeshOffsets = new ComputeBuffer(Math.Max(1, meshes.Count), 4);
@@ -126,23 +145,40 @@ namespace StreamingMesh.Core.Rendering
           frame.upload = new uint[words];
         }
         PoolBytes = bytesPerSlot * slots;
-        for (int i=0; i<meshes.Count; i++) CreateOutput(meshes[i], m_Offsets[i]);
+        for (int i=0; i<meshes.Count; i++)
+          CreateOutput(meshes[i], m_Offsets[i], recalculateNormals[i], recalculateTangents[i]);
       }
       catch { Dispose(); throw; }
     }
 
-    void CreateOutput(Mesh mesh, int globalOffset)
+    static bool[] UniformFlags(int count, bool value)
     {
-      var output = new Output {mesh=mesh, count=mesh.vertexCount, globalOffset=globalOffset};
+      var flags = new bool[count];
+      for (int i=0; i<count; i++) flags[i] = value;
+      return flags;
+    }
+
+    internal static bool CanRecalculateTangents(Mesh mesh)
+    {
+      return mesh.vertexCount > 0 && mesh.HasVertexAttribute(VertexAttribute.TexCoord0) &&
+        mesh.GetVertexAttributeDimension(VertexAttribute.TexCoord0) >= 2 && mesh.triangles.Length >= 3;
+    }
+
+    void CreateOutput(Mesh mesh, int globalOffset, bool normals, bool tangents)
+    {
+      tangents = tangents && CanRecalculateTangents(mesh);
+      var output = new Output {mesh=mesh, count=mesh.vertexCount, globalOffset=globalOffset,
+        normals=normals || tangents, tangents=tangents};
       m_Outputs.Add(output);
       if (output.count == 0) return;
       var attributes = new List<VertexAttributeDescriptor> {
         new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3),
         new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3)
       };
+      if (tangents) attributes.Add(new VertexAttributeDescriptor(VertexAttribute.Tangent, VertexAttributeFormat.Float32, 4));
       var uvChannels = new List<Vector4>[8];
       var dimensions = new int[8];
-      int floats = 6;
+      int floats = tangents ? 10 : 6;
       for (int channel=0; channel<8; channel++)
       {
         var attribute = (VertexAttribute)((int)VertexAttribute.TexCoord0 + channel);
@@ -159,6 +195,7 @@ namespace StreamingMesh.Core.Rendering
         int o=i*floats;
         initial[o]=positions[i].x; initial[o+1]=positions[i].y; initial[o+2]=positions[i].z;
         o+=6;
+        if (tangents) { initial[o]=1; initial[o+3]=1; o+=4; }
         for (int c=0; c<8; c++)
           for (int d=0; d<dimensions[c]; d++) initial[o++]=uvChannels[c][i][d];
       }
@@ -167,8 +204,10 @@ namespace StreamingMesh.Core.Rendering
       mesh.SetVertexBufferData(initial, 0, 0, initial.Length, 0, MeshUpdateFlags.DontRecalculateBounds);
       output.stride=mesh.GetVertexBufferStride(0);
       output.normalOffset=mesh.GetVertexAttributeOffset(VertexAttribute.Normal);
+      if (tangents) output.tangentOffset=mesh.GetVertexAttributeOffset(VertexAttribute.Tangent);
       output.buffer=mesh.GetVertexBuffer(0);
-      if (!m_Normals) return;
+      ModelBytes += (long)output.count * output.stride;
+      if (!output.normals) return;
       var indices=mesh.triangles;
       output.faceCount=indices.Length/3;
       var offsets=new int[output.count+1];
@@ -182,6 +221,32 @@ namespace StreamingMesh.Core.Rendering
       output.faces=new ComputeBuffer(Math.Max(1,output.faceCount),16);
       output.offsets=new ComputeBuffer(offsets.Length,4); output.offsets.SetData(offsets);
       output.adjacency=new ComputeBuffer(adjacent.Length,4); output.adjacency.SetData(adjacent);
+      ModelBytes += (long)output.triangles.count * 4 + (long)output.faces.count * 16 +
+        (long)(output.offsets.count + output.adjacency.count) * 4;
+      if (!tangents) return;
+      // UVs and topology are fixed for a connection. Invalid/near-collinear UVs
+      // contribute zero; the vertex kernel supplies a stable orthogonal basis.
+      var uv = mesh.uv;
+      var coefficients = new Vector4[Math.Max(1, output.faceCount)];
+      for (int face=0; face<output.faceCount; face++)
+      {
+        Vector2 d1=uv[indices[face*3+1]]-uv[indices[face*3]];
+        Vector2 d2=uv[indices[face*3+2]]-uv[indices[face*3]];
+        double det=(double)d1.x*d2.y-(double)d1.y*d2.x;
+        double scale=((double)d1.x*d1.x+(double)d1.y*d1.y)*
+          ((double)d2.x*d2.x+(double)d2.y*d2.y);
+        if (double.IsNaN(det) || double.IsInfinity(det) || det*det <= Math.Max(1e-60, 1e-12*scale)) continue;
+        var coefficient=new Vector4((float)(d2.y/det), (float)(-d1.y/det),
+          (float)(-d2.x/det), (float)(d1.x/det));
+        if (Finite(coefficient.x) && Finite(coefficient.y) && Finite(coefficient.z) && Finite(coefficient.w))
+          coefficients[face]=coefficient;
+      }
+      output.uvCoefficients=new ComputeBuffer(coefficients.Length,16); output.uvCoefficients.SetData(coefficients);
+      output.faceTangents=new ComputeBuffer(coefficients.Length,16);
+      output.faceBitangents=new ComputeBuffer(coefficients.Length,16);
+      long scratchBytes=(long)coefficients.Length*48;
+      ModelBytes += scratchBytes;
+      TangentBytes += (long)output.count*16 + scratchBytes;
     }
 
     /// <summary>False with null error means bounded pool backpressure, not a broken frame.</summary>
@@ -330,7 +395,7 @@ namespace StreamingMesh.Core.Rendering
           commands.SetComputeIntParam(m_Shader,"meshStride",o.stride);
           commands.SetComputeBufferParam(m_Shader,m_PresentKernel,"meshVertices",o.buffer);
           commands.DispatchCompute(m_Shader,m_PresentKernel,Groups(o.count),1,1);
-          if(!m_Normals) continue;
+          if(!o.normals) continue;
           commands.SetComputeIntParam(m_Shader,"normalOffset",o.normalOffset);
           commands.SetComputeIntParam(m_Shader,"faceCount",o.faceCount);
           commands.SetComputeBufferParam(m_Shader,m_FaceKernel,"meshVertices",o.buffer);
@@ -342,6 +407,21 @@ namespace StreamingMesh.Core.Rendering
           commands.SetComputeBufferParam(m_Shader,m_NormalKernel,"adjacencyOffsets",o.offsets);
           commands.SetComputeBufferParam(m_Shader,m_NormalKernel,"adjacencyFaces",o.adjacency);
           commands.DispatchCompute(m_Shader,m_NormalKernel,Groups(o.count),1,1);
+          if(!o.tangents) continue;
+          commands.SetComputeIntParam(m_Shader,"tangentOffset",o.tangentOffset);
+          commands.SetComputeBufferParam(m_Shader,m_FaceTangentKernel,"meshVertices",o.buffer);
+          commands.SetComputeBufferParam(m_Shader,m_FaceTangentKernel,"triangleIndices",o.triangles);
+          commands.SetComputeBufferParam(m_Shader,m_FaceTangentKernel,"faceNormals",o.faces);
+          commands.SetComputeBufferParam(m_Shader,m_FaceTangentKernel,"uvCoefficients",o.uvCoefficients);
+          commands.SetComputeBufferParam(m_Shader,m_FaceTangentKernel,"faceTangents",o.faceTangents);
+          commands.SetComputeBufferParam(m_Shader,m_FaceTangentKernel,"faceBitangents",o.faceBitangents);
+          if(o.faceCount>0) commands.DispatchCompute(m_Shader,m_FaceTangentKernel,Groups(o.faceCount),1,1);
+          commands.SetComputeBufferParam(m_Shader,m_VertexTangentKernel,"meshVertices",o.buffer);
+          commands.SetComputeBufferParam(m_Shader,m_VertexTangentKernel,"faceTangents",o.faceTangents);
+          commands.SetComputeBufferParam(m_Shader,m_VertexTangentKernel,"faceBitangents",o.faceBitangents);
+          commands.SetComputeBufferParam(m_Shader,m_VertexTangentKernel,"adjacencyOffsets",o.offsets);
+          commands.SetComputeBufferParam(m_Shader,m_VertexTangentKernel,"adjacencyFaces",o.adjacency);
+          commands.DispatchCompute(m_Shader,m_VertexTangentKernel,Groups(o.count),1,1);
         }
         Graphics.ExecuteCommandBuffer(commands);
       }

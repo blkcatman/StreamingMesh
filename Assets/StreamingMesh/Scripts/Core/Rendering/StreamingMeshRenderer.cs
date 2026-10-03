@@ -39,6 +39,7 @@ namespace StreamingMesh.Core.Rendering
     readonly Dictionary<string, Material> m_MaterialDictionary = new Dictionary<string, Material>();
     readonly Dictionary<string, Mesh> m_MeshDictionary = new Dictionary<string, Mesh>();
     readonly List<Mesh> m_MeshList = new List<Mesh>();
+    readonly List<List<string>> m_MeshMaterialNames = new List<List<string>>();
     readonly HashSet<int> m_ReceivedChunks = new HashSet<int>();
     readonly SortedDictionary<uint, EncodedFrame> m_EncodedFrames = new SortedDictionary<uint, EncodedFrame>();
     readonly List<DecodedFrame> m_DecodedFrames = new List<DecodedFrame>();
@@ -49,14 +50,20 @@ namespace StreamingMesh.Core.Rendering
     VertexContainer m_VertexContainer;
     GpuVertexPipeline m_GpuPipeline;
     readonly Queue<GpuVertexPipeline.Frame> m_PendingGpuFrames = new Queue<GpuVertexPipeline.Frame>();
-    bool m_RecalculateNormals = true;
+    bool[] m_RecalculateNormals, m_RecalculateTangents;
     public ReceiverDecodeBackend DecodeBackend { get; set; } = ReceiverDecodeBackend.Auto;
     public ReceiverNormalMode NormalMode { get; set; } = ReceiverNormalMode.Auto;
+    public ReceiverTangentMode TangentMode { get; set; } = ReceiverTangentMode.Auto;
+    /// <summary>Stream material names explicitly declared to require tangents in Auto mode.
+    /// Configure before CreateVertexContainer; reconnect to change the output layout.</summary>
+    public HashSet<string> TangentMaterialNames { get; } = new HashSet<string>(StringComparer.Ordinal);
     public bool IsGpuResident { get { return m_GpuPipeline != null; } }
     public int EncodedFrameCount { get { return m_EncodedFrames.Count; } }
     public bool CanAcceptChunk { get { return m_EncodedFrames.Count < Math.Max(16, m_CombinedFrames * 2); } }
     public int PendingGpuFrameCount { get { return m_PendingGpuFrames.Count; } }
     public long GpuPoolBytes { get { return m_GpuPipeline == null ? 0 : m_GpuPipeline.PoolBytes; } }
+    public long GpuModelBytes { get { return m_GpuPipeline == null ? 0 : m_GpuPipeline.ModelBytes; } }
+    public long GpuTangentBytes { get { return m_GpuPipeline == null ? 0 : m_GpuPipeline.TangentBytes; } }
 
     int m_ContainerSize = 4;
     int m_PackageSize = 128;
@@ -148,12 +155,13 @@ namespace StreamingMesh.Core.Rendering
         m_MaterialDictionary.Add(name, material);
     }
 
-    public void AddMesh(string name, Mesh mesh)
+    public void AddMesh(string name, Mesh mesh, IList<string> materialNames = null)
     {
       if (!m_MeshDictionary.ContainsKey(name))
       {
         m_MeshDictionary.Add(name, mesh);
         m_MeshList.Add(mesh);
+        m_MeshMaterialNames.Add(materialNames == null ? new List<string>() : new List<string>(materialNames));
       }
     }
 
@@ -177,8 +185,7 @@ namespace StreamingMesh.Core.Rendering
       m_LastPresentedSequence = uint.MaxValue;
       m_ContainerSize = containerSize;
       m_PackageSize = packageSize;
-      m_RecalculateNormals = NormalMode == ReceiverNormalMode.Recalculate ||
-        (NormalMode == ReceiverNormalMode.Auto && UsesNormals());
+      ConfigureVertexRequirements();
       // The CPU decoder always remains a true CPU fallback, never a readback path.
       m_VertexContainer = new VertexContainer(packageSize, containerSize, false);
       if (enableComputeShader && DecodeBackend != ReceiverDecodeBackend.CPU)
@@ -186,16 +193,43 @@ namespace StreamingMesh.Core.Rendering
         try
         {
           m_GpuPipeline = new GpuVertexPipeline(m_MeshList, packageSize, containerSize,
-            m_MaxDecodedFrames + 8, m_RecalculateNormals);
+            m_MaxDecodedFrames + 8, m_RecalculateNormals, m_RecalculateTangents);
           m_MaxDecodedFrames = Math.Min(m_MaxDecodedFrames, Math.Max(3, m_GpuPipeline.Capacity - 2));
           Debug.Log("StreamingMesh GPU resident receiver: " + m_GpuPipeline.Capacity +
-            " slots, " + m_GpuPipeline.PoolBytes + " pool bytes, normals=" + m_RecalculateNormals);
+            " slots, " + m_GpuPipeline.PoolBytes + " pool bytes, " + m_GpuPipeline.ModelBytes +
+            " model bytes, " + m_GpuPipeline.TangentBytes + " tangent bytes");
         }
         catch (Exception exception)
         {
           Debug.LogWarning("StreamingMesh GPU initialization unavailable; using CPU: " + exception.Message);
         }
       }
+    }
+
+    void ConfigureVertexRequirements()
+    {
+      m_RecalculateNormals = new bool[m_MeshList.Count];
+      m_RecalculateTangents = new bool[m_MeshList.Count];
+      bool defaultNormals = NormalMode == ReceiverNormalMode.Recalculate ||
+        (NormalMode == ReceiverNormalMode.Auto && UsesNormals());
+      bool forcedNormals = false;
+      for (int i=0; i<m_MeshList.Count; i++)
+      {
+        bool requested = TangentMode == ReceiverTangentMode.Recalculate;
+        if (TangentMode == ReceiverTangentMode.Auto)
+          foreach (string material in m_MeshMaterialNames[i])
+            if (material != null && TangentMaterialNames.Contains(material.TrimEnd('\0')))
+              { requested = true; break; }
+        bool tangents = requested && GpuVertexPipeline.CanRecalculateTangents(m_MeshList[i]);
+        m_RecalculateTangents[i] = tangents;
+        m_RecalculateNormals[i] = defaultNormals || tangents;
+        forcedNormals |= tangents && NormalMode == ReceiverNormalMode.None;
+        if (requested && !tangents && m_MeshList[i].vertexCount > 0)
+          Debug.LogWarning("StreamingMesh tangent reconstruction skipped for '" + m_MeshList[i].name +
+            "': UV0 (at least two components) and triangles are required.");
+      }
+      if (forcedNormals)
+        Debug.LogWarning("StreamingMesh tangent reconstruction enables normals on its target meshes despite Normal Mode=None.");
     }
 
     bool UsesNormals()
@@ -578,7 +612,10 @@ namespace StreamingMesh.Core.Rendering
           output[vertexIndex].z = Mathf.LerpUnclamped(oldVertices[offset + 2], newVertices[offset + 2], interpolation);
         }
         m_MeshList[meshIndex].vertices = output;
-        if (m_RecalculateNormals) m_MeshList[meshIndex].RecalculateNormals();
+        if (m_RecalculateNormals == null || m_RecalculateNormals[meshIndex])
+          m_MeshList[meshIndex].RecalculateNormals();
+        if (m_RecalculateTangents != null && m_RecalculateTangents[meshIndex])
+          m_MeshList[meshIndex].RecalculateTangents();
       }
     }
 
@@ -599,11 +636,14 @@ namespace StreamingMesh.Core.Rendering
       foreach (var material in m_MaterialDictionary.Values) UnityEngine.Object.Destroy(material);
       foreach (var texture in m_TextureDictionary.Values) UnityEngine.Object.Destroy(texture);
       m_MeshList.Clear();
+      m_MeshMaterialNames.Clear();
       m_MeshDictionary.Clear();
       m_MaterialDictionary.Clear();
       m_TextureDictionary.Clear();
       m_VertexLayout = null;
       m_InterpolatedVertices = null;
+      m_RecalculateNormals = null;
+      m_RecalculateTangents = null;
     }
   }
 }

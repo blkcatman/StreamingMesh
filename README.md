@@ -23,6 +23,8 @@ Unityのメッシュ・音声ストリーミング実装と、UnityChan KAGURA�
 
 旧SDユニティちゃんのサンプルシーンと素材は削除しました。過去の検証記録は `Docs/` に残しています。
 
+受信Meshの接線はGPU／CPUで再計算できます。Receiverの `Tangent Mode` で有効化し、`Auto` では `Tangent Material Names` に接線が必要な配信マテリアル名を登録します。設定後は再接続してください。詳細と検証範囲は[Receiverの接線再構築](Docs/RECEIVER_TANGENTS.md)を参照してください。
+
 ## TimeWireモジュール
 
 共通クロックの独立パッケージ[TimeWire](https://github.com/blkcatman/TimeWire/blob/main/README.ja.md)と、任意に追加できる[NTP入力](https://github.com/blkcatman/TimeWire/blob/main/NTP/README.ja.md)・[OSC時計ホスト／入力](https://github.com/blkcatman/TimeWire/blob/main/OSC/README.ja.md)を、GitHubからUPMで取得します。各パッケージのライセンスはMITです。隣接するTimeWireフォルダは不要です。

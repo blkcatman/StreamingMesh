@@ -101,7 +101,12 @@ namespace StreamingMesh
     }
 
     [SerializeField] ReceiverDecodeBackend m_DecodeBackend = ReceiverDecodeBackend.Auto;
-    [SerializeField] ReceiverNormalMode m_NormalMode = ReceiverNormalMode.Auto;
+    [SerializeField, Tooltip("Reconnect after changing vertex settings. Tangent reconstruction enables normals on target meshes even when this is None.")]
+    ReceiverNormalMode m_NormalMode = ReceiverNormalMode.Auto;
+    [SerializeField, Tooltip("Auto uses the explicit Tangent Material Names list. Recalculate processes all meshes with UV0 and triangles. Reconnect after changing this setting.")]
+    ReceiverTangentMode m_TangentMode = ReceiverTangentMode.Auto;
+    [SerializeField, Tooltip("Stream material names whose shaders require tangents (any submesh enables its entire mesh). Used in Auto mode; reconnect after editing.")]
+    string[] m_TangentMaterialNames = new string[0];
 
     //Shaders
     public Shader m_DefaultShader;
@@ -550,7 +555,7 @@ namespace StreamingMesh
 
           meshFilter.mesh = mesh;
           renderer.materials = materials.ToArray();
-          meshRenderer.AddMesh(name, mesh);
+          meshRenderer.AddMesh(name, mesh, refMaterials);
           offsetBytes += size;
           yield return null;
         }
@@ -559,6 +564,10 @@ namespace StreamingMesh
         meshRenderer.CreateVertexBuffer();
         meshRenderer.DecodeBackend = m_DecodeBackend;
         meshRenderer.NormalMode = m_NormalMode;
+        meshRenderer.TangentMode = m_TangentMode;
+        if (m_TangentMaterialNames != null)
+          foreach (string materialName in m_TangentMaterialNames)
+            if (!string.IsNullOrEmpty(materialName)) meshRenderer.TangentMaterialNames.Add(materialName.TrimEnd('\0'));
         meshRenderer.CreateVertexContainer(channelInfo.package_size, channelInfo.container_size);
         meshRenderer.RootGameObject = rootGameObject;
         m_MeshRenderer = meshRenderer;

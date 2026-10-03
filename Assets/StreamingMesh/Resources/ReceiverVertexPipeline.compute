@@ -4,6 +4,8 @@
 #pragma kernel Present
 #pragma kernel FaceNormals
 #pragma kernel VertexNormals
+#pragma kernel FaceTangents
+#pragma kernel VertexTangents
 
 ByteAddressBuffer inputBytes;
 StructuredBuffer<uint4> tiles;
@@ -18,7 +20,11 @@ StructuredBuffer<int> triangleIndices;
 RWStructuredBuffer<float4> faceNormals;
 StructuredBuffer<int> adjacencyOffsets;
 StructuredBuffer<int> adjacencyFaces;
+StructuredBuffer<float4> uvCoefficients;
+RWStructuredBuffer<float4> faceTangents;
+RWStructuredBuffer<float4> faceBitangents;
 uint vertexCount, tileCount, headerSize, meshOffset, meshStride, normalOffset, faceCount;
+uint tangentOffset;
 float tileScale, subTileScale, interpolation;
 int halfPackage;
 
@@ -94,7 +100,7 @@ void FaceNormals(uint3 id : SV_DispatchThreadID)
     // Quantization/interpolation can collapse a face into a line. Reject its
     // roundoff residual before normalization amplifies it into an arbitrary normal.
     float threshold = max(1e-30, 1e-12 * dot(aEdge,aEdge) * dot(bEdge,bEdge));
-    if (dot(n,n) <= threshold) n = 0;
+    if (!all(isfinite(n)) || !isfinite(dot(n,n)) || dot(n,n) <= threshold) n = 0;
     faceNormals[id.x] = float4(n, 0);
 }
 
@@ -106,6 +112,54 @@ void VertexNormals(uint3 id : SV_DispatchThreadID)
     for (int j=adjacencyOffsets[id.x]; j<adjacencyOffsets[id.x+1]; ++j)
         n += faceNormals[adjacencyFaces[j]].xyz;
     float len2 = dot(n,n);
-    n = len2 > 1e-20 ? n * rsqrt(len2) : float3(0,0,0);
+    n = all(isfinite(n)) && isfinite(len2) && len2 > 1e-20 ? n * rsqrt(len2) : float3(0,0,0);
     meshVertices.Store3(id.x * meshStride + normalOffset, asuint(n));
+}
+
+[numthreads(128,1,1)]
+void FaceTangents(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= faceCount) return;
+    float3 p = asfloat(meshVertices.Load3((uint)triangleIndices[id.x*3] * meshStride));
+    float3 q = asfloat(meshVertices.Load3((uint)triangleIndices[id.x*3+1] * meshStride));
+    float3 r = asfloat(meshVertices.Load3((uint)triangleIndices[id.x*3+2] * meshStride));
+    float4 c = uvCoefficients[id.x];
+    float3 t = (q-p)*c.x + (r-p)*c.y;
+    float3 b = (q-p)*c.z + (r-p)*c.w;
+    if (dot(faceNormals[id.x].xyz, faceNormals[id.x].xyz) == 0 ||
+        !all(isfinite(t)) || !all(isfinite(b))) { t=0; b=0; }
+    faceTangents[id.x] = float4(t, 0);
+    faceBitangents[id.x] = float4(b, 0);
+}
+
+// Least-aligned axis avoids cancellation for every valid normal direction.
+float3 FallbackTangent(float3 n)
+{
+    float3 a = abs(n);
+    float3 axis = a.x <= a.y && a.x <= a.z ? float3(1,0,0) :
+        (a.y <= a.z ? float3(0,1,0) : float3(0,0,1));
+    float3 t = axis - n * dot(n,axis);
+    return t * rsqrt(dot(t,t));
+}
+
+[numthreads(128,1,1)]
+void VertexTangents(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= vertexCount) return;
+    float3 n = asfloat(meshVertices.Load3(id.x * meshStride + normalOffset));
+    float n2 = dot(n,n);
+    n = all(isfinite(n)) && isfinite(n2) && n2 > 1e-20 ? n * rsqrt(n2) : float3(0,0,1);
+    float3 t=0, b=0;
+    for (int j=adjacencyOffsets[id.x]; j<adjacencyOffsets[id.x+1]; ++j)
+    {
+        int face=adjacencyFaces[j];
+        t += faceTangents[face].xyz;
+        b += faceBitangents[face].xyz;
+    }
+    t -= n * dot(n,t);
+    float t2=dot(t,t);
+    t = all(isfinite(t)) && isfinite(t2) && t2 > 1e-20 ? t * rsqrt(t2) : FallbackTangent(n);
+    float orientation=dot(cross(n,t),b);
+    float w=isfinite(orientation) && orientation < 0 ? -1.0 : 1.0;
+    meshVertices.Store4(id.x * meshStride + tangentOffset, asuint(float4(t,w)));
 }
