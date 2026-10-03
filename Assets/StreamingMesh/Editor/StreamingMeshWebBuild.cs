@@ -23,6 +23,8 @@ namespace StreamingMesh.Editor
       });
       PlayerSettings.WebGL.threadsSupport = true;
       PlayerSettings.WebGL.wasm2023 = true;
+      // Desktop sample headroom; payload and snapshot pools remain bounded.
+      PlayerSettings.WebGL.maximumMemorySize = 4096;
       PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Disabled;
       PlayerSettings.WebGL.decompressionFallback = true;
       AssetDatabase.SaveAssets();

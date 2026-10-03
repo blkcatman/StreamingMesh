@@ -28,6 +28,25 @@ namespace StreamingMesh.Core.Rendering
       internal bool submitted, held;
 #if UNITY_WEBGL && !UNITY_EDITOR
       internal bool readbackDone, readbackFailed;
+      internal readonly Action<AsyncGPUReadbackRequest> readbackCallback;
+      public Frame() { readbackCallback = CompleteReadback; }
+      void CompleteReadback(AsyncGPUReadbackRequest request)
+      {
+        if (request.hasError) { readbackFailed = true; return; }
+        try
+        {
+          Vector4 firstVertex = request.GetData<Vector4>()[0];
+          if (!Finite(firstVertex.x) || !Finite(firstVertex.y) || !Finite(firstVertex.z))
+            throw new InvalidOperationException("WebGPU decoded a non-finite vertex.");
+          if (Sequence < 2) Debug.Log("StreamingMesh WebGPU decoded frame " + Sequence + " first vertex=" + firstVertex.ToString("F6"));
+          readbackDone = true;
+        }
+        catch (Exception exception)
+        {
+          readbackFailed = true;
+          Debug.LogWarning("StreamingMesh WebGPU decode probe failed: " + exception.Message);
+        }
+      }
       public bool IsReady
       {
         get
@@ -62,6 +81,7 @@ namespace StreamingMesh.Core.Rendering
     readonly int[] m_Offsets, m_Counts;
     readonly bool[] m_Seen;
     readonly int m_Count, m_PackageSize, m_ContainerSize, m_MaxInputBytes;
+    CommandBuffer m_RestoreCommands, m_PresentCommands;
     ComputeShader m_Shader;
     ComputeBuffer m_State, m_PackedIndices, m_MeshOffsets;
     int m_KeyKernel, m_DeltaKernel, m_CopyKernel, m_PresentKernel, m_FaceKernel, m_NormalKernel;
@@ -132,6 +152,9 @@ namespace StreamingMesh.Core.Rendering
         if (Array.Exists(recalculateTangents, value => value) &&
             (!m_Shader.IsSupported(m_FaceTangentKernel) || !m_Shader.IsSupported(m_VertexTangentKernel)))
           throw new NotSupportedException("Receiver tangent kernels are unsupported.");
+        m_RestoreCommands = new CommandBuffer {name="StreamingMesh GPU restore"};
+        m_PresentCommands = new CommandBuffer {name="StreamingMesh GPU presentation"};
+        m_Tiles.Capacity = m_Count;
         m_State = new ComputeBuffer(m_Count, 16);
         m_PackedIndices = new ComputeBuffer(m_Count, 4);
         m_MeshOffsets = new ComputeBuffer(Math.Max(1, meshes.Count), 4);
@@ -252,22 +275,28 @@ namespace StreamingMesh.Core.Rendering
     /// <summary>False with null error means bounded pool backpressure, not a broken frame.</summary>
     public bool TrySubmit(byte[] source, uint sequence, double time, out Frame frame, out string error)
     {
+      return TrySubmit(source == null ? default(ArraySegment<byte>) : new ArraySegment<byte>(source), sequence, time, out frame, out error);
+    }
+
+    public bool TrySubmit(ArraySegment<byte> source, uint sequence, double time, out Frame frame, out string error)
+    {
       frame=null; error=null;
       if(m_Disposed) throw new ObjectDisposedException(nameof(GpuVertexPipeline));
       foreach(var candidate in m_Frames)
         if(!candidate.held && (!candidate.submitted || candidate.IsReady)) {frame=candidate;break;}
       if(frame==null) return false;
       if(!Validate(source, out var bounds, out error)) {frame=null; m_HasKeyframe=false; return false;}
-      int words=(source.Length+3)/4;
+      int words=(source.Count+3)/4;
 #if UNITY_WEBGL && !UNITY_EDITOR
       frame.readbackDone=false; frame.readbackFailed=false;
 #endif
       frame.upload[words-1]=0;
-      Buffer.BlockCopy(source,0,frame.upload,0,source.Length);
+      Buffer.BlockCopy(source.Array,source.Offset,frame.upload,0,source.Count);
       frame.input.SetData(frame.upload,0,0,words);
       bool key=source[0]==0x0f;
       if(key) frame.tiles.SetData(m_Tiles);
-      using(var commands=new CommandBuffer {name="StreamingMesh GPU restore"})
+      var commands = m_RestoreCommands; commands.Clear();
+      frame.Sequence=sequence; frame.Time=time;
       {
         int k=key?m_KeyKernel:m_DeltaKernel;
         commands.SetComputeIntParam(m_Shader,"vertexCount",m_Count);
@@ -290,53 +319,32 @@ namespace StreamingMesh.Core.Rendering
         commands.SetComputeBufferParam(m_Shader,m_CopyKernel,"snapshotVertices",frame.vertices);
         commands.DispatchCompute(m_Shader,m_CopyKernel,Groups(m_Count),1,1);
 #if UNITY_WEBGL && !UNITY_EDITOR
-        Frame submittedFrame=frame;
-        commands.RequestAsyncReadback(frame.vertices, 16, 0, request =>
-        {
-          if (request.hasError) {submittedFrame.readbackFailed=true; return;}
-          try
-          {
-            Vector4 firstVertex=request.GetData<Vector4>()[0];
-            if (float.IsNaN(firstVertex.x) || float.IsInfinity(firstVertex.x) ||
-                float.IsNaN(firstVertex.y) || float.IsInfinity(firstVertex.y) ||
-                float.IsNaN(firstVertex.z) || float.IsInfinity(firstVertex.z))
-              throw new InvalidOperationException("WebGPU decoded a non-finite vertex.");
-            if (submittedFrame.Sequence < 2)
-              Debug.Log("StreamingMesh WebGPU decoded frame " + submittedFrame.Sequence +
-                " first vertex=" + firstVertex.ToString("F6"));
-            submittedFrame.readbackDone=true;
-          }
-          catch (Exception exception)
-          {
-            submittedFrame.readbackFailed=true;
-            Debug.LogWarning("StreamingMesh WebGPU decode probe failed: " + exception.Message);
-          }
-        });
+        commands.RequestAsyncReadback(frame.vertices, 16, 0, frame.readbackCallback);
 #else
         frame.fence=commands.CreateGraphicsFence(GraphicsFenceType.CPUSynchronisation,SynchronisationStageFlags.AllGPUOperations);
 #endif
         Graphics.ExecuteCommandBuffer(commands);
       }
       frame.Sequence=sequence; frame.Time=time; frame.Bounds=bounds;
-      frame.RootPosition=new Vector3(BitConverter.ToSingle(source,9),BitConverter.ToSingle(source,13),BitConverter.ToSingle(source,17));
+      frame.RootPosition=new Vector3(BitConverter.ToSingle(source.Array,source.Offset+9),BitConverter.ToSingle(source.Array,source.Offset+13),BitConverter.ToSingle(source.Array,source.Offset+17));
       frame.held=true; frame.submitted=true;
       m_HasKeyframe=true; m_Bounds=bounds;
       return true;
     }
 
-    bool Validate(byte[] source, out Bounds bounds, out string error)
+    bool Validate(ArraySegment<byte> source, out Bounds bounds, out string error)
     {
       bounds=m_Bounds; error="Invalid GPU frame payload.";
-      if(source==null || source.Length<21 || source.Length>m_MaxInputBytes) return false;
+      if(source.Array==null || source.Count<21 || source.Count>m_MaxInputBytes) return false;
       int header=source[8]>=2?29:21;
-      if(source.Length<header) return false;
-      for(int p=9;p<21;p+=4) if(!Finite(BitConverter.ToSingle(source,p))) return false;
+      if(source.Count<header) return false;
+      for(int p=9;p<21;p+=4) if(!Finite(BitConverter.ToSingle(source.Array,source.Offset+p))) return false;
       if(source[0]==0x0e)
       {
-        if(!m_HasKeyframe || source.Length!=header+m_Count*3) return false;
+        if(!m_HasKeyframe || source.Count!=header+m_Count*3) return false;
         // A conservative CPU bound from encoded bytes, without expanding vertex positions.
         int maxX=0, maxY=0, maxZ=0;
-        for(int i=header;i<source.Length;i+=3)
+        for(int i=header;i<source.Count;i+=3)
         {
           int x=source[i]-128,y=source[i+1]-128,z=source[i+2]-128;
           x*=x; y*=y; z*=z;
@@ -353,9 +361,9 @@ namespace StreamingMesh.Core.Rendering
       bool first=true;
       for(int t=0;t<packageCount;t++)
       {
-        if(offset>source.Length-6) return false;
+        if(offset>source.Count-6) return false;
         int n=source[offset+3]|source[offset+4]<<8|source[offset+5]<<16;
-        if(n<=0 || n>m_Count-total || (long)n*5>source.Length-offset-6) return false;
+        if(n<=0 || n>m_Count-total || (long)n*5>source.Count-offset-6) return false;
         m_Tiles.Add(new Tile {start=(uint)total,count=(uint)n,data=(uint)(offset+6),origin=(uint)offset});
         var min=new Vector3(source[offset]-m_PackageSize/2,source[offset+1]-m_PackageSize/2,source[offset+2]-m_PackageSize/2)*scale;
         if(first) {bounds=new Bounds(min,Vector3.zero);first=false;}
@@ -371,7 +379,7 @@ namespace StreamingMesh.Core.Rendering
         }
         total+=n;
       }
-      if(total!=m_Count || offset!=source.Length) return false;
+      if(total!=m_Count || offset!=source.Count) return false;
       error=null; return true;
     }
 
@@ -381,7 +389,7 @@ namespace StreamingMesh.Core.Rendering
     {
       if(m_Disposed) throw new ObjectDisposedException(nameof(GpuVertexPipeline));
       var bounds=previous.Bounds; bounds.Encapsulate(next.Bounds.min); bounds.Encapsulate(next.Bounds.max);
-      using(var commands=new CommandBuffer {name="StreamingMesh GPU presentation"})
+      var commands = m_PresentCommands; commands.Clear();
       {
         commands.SetComputeFloatParam(m_Shader,"interpolation",interpolation);
         commands.SetComputeBufferParam(m_Shader,m_PresentKernel,"previousVertices",previous.vertices);
@@ -437,6 +445,7 @@ namespace StreamingMesh.Core.Rendering
       foreach(var frame in m_Frames) {frame.input?.Dispose();frame.tiles?.Dispose();frame.vertices?.Dispose();}
       foreach(var output in m_Outputs) output.Dispose();
       m_Frames.Clear(); m_Outputs.Clear();
+      m_RestoreCommands?.Dispose(); m_PresentCommands?.Dispose();
       m_State?.Dispose();m_PackedIndices?.Dispose();m_MeshOffsets?.Dispose();
       if(m_Shader!=null)
       {

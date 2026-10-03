@@ -27,6 +27,8 @@ Unityのメッシュ・音声ストリーミング実装と、UnityChan KAGURA�
 
 KAGURA ReceiverはURP ToonでSenderのマテリアル設定を復元します。更新後はSenderでCreate Channelと録画を作り直し、Receiverで再接続してください。テンプレート設定と送信対象は[Receiverのマテリアル復元](Docs/RECEIVER_MATERIALS.md)を参照してください。
 
+Receiverは上限付きのリングバッファとチャンク・頂点スナップショットの再利用で、フレームごとの管理ヒープ割り当てを抑えます。WebサンプルのWASMメモリ上限は4096MBです。バッファの所有権、制限と割り当て検証は[Web受信側のメモリ管理](Docs/WEB_TESTING.md#receiverのメモリ管理)を参照してください。
+
 ## TimeWireモジュール
 
 共通クロックの独立パッケージ[TimeWire](https://github.com/blkcatman/TimeWire/blob/main/README.ja.md)と、任意に追加できる[NTP入力](https://github.com/blkcatman/TimeWire/blob/main/NTP/README.ja.md)・[OSC時計ホスト／入力](https://github.com/blkcatman/TimeWire/blob/main/OSC/README.ja.md)を、GitHubからUPMで取得します。各パッケージのライセンスはMITです。隣接するTimeWireフォルダは不要です。

@@ -46,6 +46,9 @@ namespace StreamingMesh.Core
     readonly int m_ContainerSize;
     readonly int m_PackageSize;
     readonly List<int> m_PackedIndices = new List<int>();
+    readonly List<int> m_ParsedIndices = new List<int>();
+    readonly List<KeyframeCommand> m_KeyframeCommands = new List<KeyframeCommand>();
+    readonly List<DeltaCommand> m_DeltaCommands = new List<DeltaCommand>();
 
     ComputeShader m_DecodeShader;
     ComputeBuffer m_VertexBuffer;
@@ -97,20 +100,38 @@ namespace StreamingMesh.Core
       out float destX, out float destY, out float destZ,
       out int keyFrame)
     {
+      return DecodeSlice(source == null ? default(ArraySegment<byte>) : new ArraySegment<byte>(source), ref dest,
+        out destX, out destY, out destZ, out keyFrame);
+    }
+
+    /// <summary>Decode into caller-owned snapshot storage. No result object or
+    /// vertex arrays are created after layout/command storage is initialized.</summary>
+    public bool DecodeInto(ArraySegment<byte> source, float[][] destination, out Vector3 rootPosition, out string error)
+    {
+      rootPosition = default(Vector3); error = null;
+      if (m_DecodeInFlight) { error = "A decode is already in flight."; return false; }
+      int status = DecodeSlice(source, ref destination, out float x, out float y, out float z, out int key);
+      if (status != 0) { m_HasKeyframe = false; error = "Invalid vertex frame or layout."; return false; }
+      rootPosition = new Vector3(x, y, z); return true;
+    }
+
+    int DecodeSlice(ArraySegment<byte> source, ref float[][] dest,
+      out float destX, out float destY, out float destZ, out int keyFrame)
+    {
       destX = 0.0f;
       destY = 0.0f;
       destZ = 0.0f;
       keyFrame = 0;
 
-      if (source == null || source.Length < LegacyHeaderSize || dest == null)
+      if (m_DisposeRequested || m_DecodeInFlight || source.Array == null || source.Count < LegacyHeaderSize || dest == null)
       {
         Debug.LogError("StreamingMesh frame is missing or shorter than its header.");
         return -1;
       }
 
-      destX = BitConverter.ToSingle(source, 9);
-      destY = BitConverter.ToSingle(source, 13);
-      destZ = BitConverter.ToSingle(source, 17);
+      destX = BitConverter.ToSingle(source.Array, source.Offset + 9);
+      destY = BitConverter.ToSingle(source.Array, source.Offset + 13);
+      destZ = BitConverter.ToSingle(source.Array, source.Offset + 17);
 
       if (!EnsureLayout(dest))
         return -1;
@@ -201,7 +222,7 @@ namespace StreamingMesh.Core
       if (isKeyframe)
       {
         List<int> packedIndices;
-        if (!TryParseKeyframe(source, destinationLayout, out keyframeCommands, out packedIndices))
+        if (!TryParseKeyframe(new ArraySegment<byte>(source), destinationLayout, out keyframeCommands, out packedIndices))
         {
           completed(CreateErrorResult(source, "StreamingMesh keyframe payload is invalid."));
           return;
@@ -213,7 +234,7 @@ namespace StreamingMesh.Core
       }
       else if (source[0] == 0x0E)
       {
-        if (!m_HasKeyframe || !TryParseDelta(source, out deltaCommands))
+        if (!m_HasKeyframe || !TryParseDelta(new ArraySegment<byte>(source), out deltaCommands))
         {
           completed(CreateErrorResult(source, "StreamingMesh delta frame has no valid base keyframe."));
           return;
@@ -353,7 +374,6 @@ namespace StreamingMesh.Core
     {
       int totalVertexCount = 0;
       bool layoutChanged = m_MeshVertexCounts == null || m_MeshVertexCounts.Length != destination.Length;
-      int[] vertexCounts = new int[destination.Length];
 
       for (int i = 0; i < destination.Length; i++)
       {
@@ -363,23 +383,29 @@ namespace StreamingMesh.Core
           return false;
         }
 
-        vertexCounts[i] = destination[i].Length / 3;
-        if (!layoutChanged && vertexCounts[i] != m_MeshVertexCounts[i])
+        int count = destination[i].Length / 3;
+        if (!layoutChanged && count != m_MeshVertexCounts[i])
           layoutChanged = true;
-        totalVertexCount += vertexCounts[i];
+        totalVertexCount = checked(totalVertexCount + count);
       }
 
       if (!layoutChanged)
         return true;
 
-      m_MeshOffsets = new int[destination.Length];
-      m_MeshVertexCounts = vertexCounts;
       if (m_DecodeInFlight)
       {
         Debug.LogError("StreamingMesh mesh layout changed while a GPU decode was in flight.");
         return false;
       }
 
+      var vertexCounts = new int[destination.Length];
+      for (int i = 0; i < destination.Length; i++) vertexCounts[i] = destination[i].Length / 3;
+      m_MeshOffsets = new int[destination.Length];
+      m_MeshVertexCounts = vertexCounts;
+      m_KeyframeCommands.Capacity = totalVertexCount;
+      m_DeltaCommands.Capacity = totalVertexCount;
+      m_ParsedIndices.Capacity = totalVertexCount;
+      m_PackedIndices.Capacity = totalVertexCount;
       m_FlatVertices = new Vector4[totalVertexCount];
 
       int offset = 0;
@@ -409,16 +435,16 @@ namespace StreamingMesh.Core
     }
 
     bool TryParseKeyframe(
-      byte[] source,
+      ArraySegment<byte> source,
       float[][] destination,
       out List<KeyframeCommand> commands,
       out List<int> packedIndices)
     {
-      commands = new List<KeyframeCommand>();
-      packedIndices = new List<int>();
+      commands = m_KeyframeCommands; commands.Clear();
+      packedIndices = m_ParsedIndices; packedIndices.Clear();
 
       int headerSize = GetHeaderSize(source);
-      if (source.Length < headerSize)
+      if (source.Count < headerSize)
         return ReportBrokenFrame();
 
       int packageCount = source[5] | (source[6] << 8) | (source[7] << 16);
@@ -435,7 +461,7 @@ namespace StreamingMesh.Core
 
       for (int packageIndex = 0; packageIndex < packageCount; packageIndex++)
       {
-        if (offset > source.Length - 6)
+        if (offset > source.Count - 6)
           return ReportBrokenFrame();
 
         float tileX = (source[offset] - halfPackage) * tileScale;
@@ -445,7 +471,7 @@ namespace StreamingMesh.Core
         offset += 6;
 
         long packageBytes = (long)vertexCount * 5L;
-        if (packageBytes > source.Length - offset)
+        if (packageBytes > source.Count - offset || vertexCount > m_FlatVertices.Length - commands.Count)
           return ReportBrokenFrame();
 
         for (int vertex = 0; vertex < vertexCount; vertex++)
@@ -472,15 +498,15 @@ namespace StreamingMesh.Core
         offset += vertexCount * 5;
       }
 
-      return true;
+      return offset == source.Count || ReportBrokenFrame();
     }
 
-    bool TryParseDelta(byte[] source, out List<DeltaCommand> commands)
+    bool TryParseDelta(ArraySegment<byte> source, out List<DeltaCommand> commands)
     {
-      commands = new List<DeltaCommand>(m_PackedIndices.Count);
+      commands = m_DeltaCommands; commands.Clear();
       int headerSize = GetHeaderSize(source);
       long requiredSize = headerSize + (long)m_PackedIndices.Count * 3L;
-      if (requiredSize > source.Length)
+      if (requiredSize != source.Count)
         return ReportBrokenFrame();
 
       for (int i = 0; i < m_PackedIndices.Count; i++)
@@ -575,9 +601,9 @@ namespace StreamingMesh.Core
       return value < 0 ? -(value * value) * scale : (value * value) * scale;
     }
 
-    static int GetHeaderSize(byte[] source)
+    static int GetHeaderSize(ArraySegment<byte> source)
     {
-      return source != null && source.Length > 8 && source[8] >= 2
+      return source.Array != null && source.Count > 8 && source[8] >= 2
         ? TimestampedHeaderSize
         : LegacyHeaderSize;
     }

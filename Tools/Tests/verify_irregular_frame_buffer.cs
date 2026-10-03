@@ -2,7 +2,7 @@
 var dir="DevData/channels/channel_KAGURA/";
 var info=JsonUtility.FromJson<StreamingMesh.Core.Serialization.ChannelInfo>(System.IO.File.ReadAllText(dir+"stream.json"));
 var bytes=StreamingMesh.Lib.ExternalTools.Decompress(System.IO.File.ReadAllBytes(dir+"stream.bin"));
-var renderer=new StreamingMesh.Core.Rendering.StreamingMeshRenderer {FrameInterval=1f/60};
+var renderer=new StreamingMesh.Core.Rendering.StreamingMeshRenderer {FrameInterval=1f/60,CombinedFrames=info.combined_frames};
 int offset=info.textureSizes.Sum()+info.materialSizes.Sum();
 foreach(int size in info.meshSizes) {
  System.Collections.Generic.List<string> names;

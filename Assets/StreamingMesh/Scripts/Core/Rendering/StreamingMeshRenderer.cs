@@ -18,14 +18,6 @@ namespace StreamingMesh.Core.Rendering
   {
     public const double ResumeBufferSeconds = 0.25;
     public const double DecodeAheadSeconds = 0.5;
-    sealed class EncodedFrame
-    {
-      public uint sequence;
-      public double presentationTime;
-      public bool isKeyframe;
-      public byte[] data;
-    }
-
     sealed class DecodedFrame
     {
       public uint sequence;
@@ -33,6 +25,7 @@ namespace StreamingMesh.Core.Rendering
       public Vector3 rootPosition;
       public float[][] vertices;
       public GpuVertexPipeline.Frame gpuFrame;
+      public bool held;
     }
 
     readonly Dictionary<string, Texture2D> m_TextureDictionary = new Dictionary<string, Texture2D>();
@@ -41,15 +34,20 @@ namespace StreamingMesh.Core.Rendering
     readonly List<Mesh> m_MeshList = new List<Mesh>();
     readonly List<List<string>> m_MeshMaterialNames = new List<List<string>>();
     readonly HashSet<int> m_ReceivedChunks = new HashSet<int>();
-    readonly SortedDictionary<uint, EncodedFrame> m_EncodedFrames = new SortedDictionary<uint, EncodedFrame>();
-    readonly List<DecodedFrame> m_DecodedFrames = new List<DecodedFrame>();
+    FrameRing<EncodedFrameSlice> m_EncodedFrames;
+    EncodedChunkPool m_ChunkPool;
+    readonly object m_ImportGate = new object();
+    FrameRing<DecodedFrame> m_DecodedFrames;
+    DecodedFrame[] m_DecodedPool;
+    int[] m_RecentChunks;
+    int m_RecentChunkCursor;
 
     float[][] m_VertexLayout;
     Vector3[][] m_InterpolatedVertices;
     GameObject m_RootGameObject;
     VertexContainer m_VertexContainer;
     GpuVertexPipeline m_GpuPipeline;
-    readonly Queue<GpuVertexPipeline.Frame> m_PendingGpuFrames = new Queue<GpuVertexPipeline.Frame>();
+    readonly Queue<GpuVertexPipeline.Frame> m_PendingGpuFrames = new Queue<GpuVertexPipeline.Frame>(64);
     bool[] m_RecalculateNormals, m_RecalculateTangents;
     public ReceiverDecodeBackend DecodeBackend { get; set; } = ReceiverDecodeBackend.Auto;
     public ReceiverNormalMode NormalMode { get; set; } = ReceiverNormalMode.Auto;
@@ -58,12 +56,14 @@ namespace StreamingMesh.Core.Rendering
     /// Configure before CreateVertexContainer; reconnect to change the output layout.</summary>
     public HashSet<string> TangentMaterialNames { get; } = new HashSet<string>(StringComparer.Ordinal);
     public bool IsGpuResident { get { return m_GpuPipeline != null; } }
-    public int EncodedFrameCount { get { return m_EncodedFrames.Count; } }
-    public bool CanAcceptChunk { get { return m_EncodedFrames.Count < Math.Max(16, m_CombinedFrames * 2); } }
+    public int EncodedFrameCount { get { return m_EncodedFrames == null ? 0 : m_EncodedFrames.Count; } }
+    public bool CanAcceptChunk { get { return EncodedFrameCount < Math.Max(16, m_CombinedFrames * 2) && (m_ChunkPool == null || m_ChunkPool.HasFreeChunk); } }
     public int PendingGpuFrameCount { get { return m_PendingGpuFrames.Count; } }
     public long GpuPoolBytes { get { return m_GpuPipeline == null ? 0 : m_GpuPipeline.PoolBytes; } }
     public long GpuModelBytes { get { return m_GpuPipeline == null ? 0 : m_GpuPipeline.ModelBytes; } }
     public long GpuTangentBytes { get { return m_GpuPipeline == null ? 0 : m_GpuPipeline.TangentBytes; } }
+
+    public long EncodedPoolBytes => m_ChunkPool == null ? 0 : m_ChunkPool.AllocatedBytes;
 
     int m_ContainerSize = 4;
     int m_PackageSize = 128;
@@ -72,7 +72,6 @@ namespace StreamingMesh.Core.Rendering
     int m_PrebufferFrames = 2;
     int m_MaxDecodedFrames = 8;
 
-    bool m_DecodeInFlight;
     bool m_NeedsKeyframe = true;
     bool m_HasDecodeCursor;
     uint m_NextDecodeSequence;
@@ -82,13 +81,13 @@ namespace StreamingMesh.Core.Rendering
 
     public bool IsPlayable { get { return m_PlaybackState == StreamingPlaybackState.Playing; } }
     public StreamingPlaybackState PlaybackState { get { return m_PlaybackState; } }
-    public int BufferedFrameCount { get { return m_DecodedFrames.Count; } }
+    public int BufferedFrameCount { get { return m_DecodedFrames == null ? 0 : m_DecodedFrames.Count; } }
     public double PresentedTime { get; private set; } = double.NaN;
-    public double BufferedUntil { get { return m_DecodedFrames.Count == 0 ? double.NaN : m_DecodedFrames[m_DecodedFrames.Count - 1].presentationTime; } }
+    public double BufferedUntil { get { return BufferedFrameCount == 0 ? double.NaN : m_DecodedFrames[m_DecodedFrames.Count - 1].presentationTime; } }
 
     public bool CanPlayAt(double time, double leadSeconds)
     {
-      return m_DecodedFrames.Count >= m_PrebufferFrames &&
+      return BufferedFrameCount >= m_PrebufferFrames &&
         m_DecodedFrames[0].presentationTime <= time + 0.001 &&
         BufferedUntil >= time + leadSeconds;
     }
@@ -99,7 +98,7 @@ namespace StreamingMesh.Core.Rendering
 
     public bool TryGetPlaybackStartTime(out double presentationTime)
     {
-      if (m_DecodedFrames.Count > 0)
+      if (BufferedFrameCount > 0)
       {
         presentationTime = m_DecodedFrames[0].presentationTime;
         return true;
@@ -134,7 +133,7 @@ namespace StreamingMesh.Core.Rendering
     public int CombinedFrames
     {
       get { return m_CombinedFrames; }
-      set { m_CombinedFrames = Mathf.Max(1, value); }
+      set { if (value > 4096) throw new ArgumentOutOfRangeException(nameof(value), "Receiver chunks support at most 4096 frames."); m_CombinedFrames = Mathf.Max(1, value); }
     }
 
     public int PrebufferFrames
@@ -179,7 +178,7 @@ namespace StreamingMesh.Core.Rendering
       m_GpuPipeline?.Dispose();
       m_GpuPipeline = null;
       m_PendingGpuFrames.Clear();
-      m_DecodedFrames.Clear();
+      ClearDecodedFrames();
       m_NeedsKeyframe = true;
       m_HasDecodeCursor = false;
       m_LastPresentedSequence = uint.MaxValue;
@@ -247,7 +246,8 @@ namespace StreamingMesh.Core.Rendering
     void RemoveDecodedFrame(int index)
     {
       m_GpuPipeline?.Release(m_DecodedFrames[index].gpuFrame);
-      m_DecodedFrames.RemoveAt(index);
+      var frame = m_DecodedFrames.RemoveAt(index);
+      frame.held = false; frame.gpuFrame = null;
     }
 
     void CollectGpuFrames()
@@ -257,8 +257,10 @@ namespace StreamingMesh.Core.Rendering
         var frame = m_PendingGpuFrames.Dequeue();
         if (m_DecodedFrames.Count >= m_MaxDecodedFrames && m_DecodedFrames.Count > 2)
           RemoveDecodedFrame(1);
-        m_DecodedFrames.Add(new DecodedFrame {sequence=frame.Sequence, presentationTime=frame.Time,
-          rootPosition=frame.RootPosition, gpuFrame=frame});
+        var decoded = RentDecodedFrame(false);
+        decoded.sequence=frame.Sequence; decoded.presentationTime=frame.Time;
+        decoded.rootPosition=frame.RootPosition; decoded.gpuFrame=frame;
+        m_DecodedFrames.Add(decoded);
       }
     }
 
@@ -268,7 +270,7 @@ namespace StreamingMesh.Core.Rendering
       m_GpuPipeline?.Dispose();
       m_GpuPipeline = null;
       m_PendingGpuFrames.Clear();
-      m_DecodedFrames.Clear();
+      ClearDecodedFrames();
       m_NeedsKeyframe = true;
       m_LastPresentedSequence = uint.MaxValue;
       m_VertexContainer.Dispose();
@@ -280,6 +282,8 @@ namespace StreamingMesh.Core.Rendering
       if (m_MeshList.Count == 0)
         return;
 
+      ClearDecodedFrames(); m_DecodedPool = null;
+      EnsureDecodedStorage();
       m_VertexLayout = new float[m_MeshList.Count][];
       m_InterpolatedVertices = new Vector3[m_MeshList.Count][];
       for (int meshIndex = 0; meshIndex < m_MeshList.Count; meshIndex++)
@@ -297,41 +301,99 @@ namespace StreamingMesh.Core.Rendering
       }
     }
 
+    void EnsureEncodedStorage()
+    {
+      if (m_EncodedFrames != null) return;
+      int threshold = Math.Max(16, m_CombinedFrames * 2);
+      int slots = (threshold + m_CombinedFrames - 1) / m_CombinedFrames + 2;
+      int vertices = 0;
+      foreach (var mesh in m_MeshList) vertices = checked(vertices + mesh.vertexCount);
+      int maximumFrame = vertices == 0 ? 16 * 1024 * 1024 : checked(29 + vertices * 11);
+      m_EncodedFrames = new FrameRing<EncodedFrameSlice>(threshold + m_CombinedFrames);
+      m_ChunkPool = new EncodedChunkPool(slots, m_CombinedFrames, maximumFrame);
+      m_RecentChunks = new int[slots * 2];
+      for (int i = 0; i < m_RecentChunks.Length; i++) m_RecentChunks[i] = -1;
+    }
+
+    void EnsureDecodedStorage()
+    {
+      if (m_DecodedPool != null && m_DecodedPool.Length >= m_MaxDecodedFrames + 1) return;
+      ClearDecodedFrames();
+      m_DecodedFrames = new FrameRing<DecodedFrame>(m_MaxDecodedFrames + 1);
+      m_DecodedPool = new DecodedFrame[m_MaxDecodedFrames + 1];
+      for (int i = 0; i < m_DecodedPool.Length; i++) m_DecodedPool[i] = new DecodedFrame();
+    }
+
+    DecodedFrame RentDecodedFrame(bool cpu)
+    {
+      EnsureDecodedStorage();
+      foreach (var frame in m_DecodedPool)
+      {
+        if (frame.held) continue;
+        if (cpu && frame.vertices == null)
+        {
+          frame.vertices = new float[m_VertexLayout.Length][];
+          for (int i = 0; i < frame.vertices.Length; i++) frame.vertices[i] = new float[m_VertexLayout[i].Length];
+        }
+        frame.held = true;
+        return frame;
+      }
+      throw new InvalidOperationException("Receiver decoded frame pool is full.");
+    }
+
+    void ClearDecodedFrames()
+    {
+      if (m_DecodedFrames != null) while (m_DecodedFrames.Count > 0) RemoveDecodedFrame(0);
+    }
+
     public void AddVertexData(string name, byte[] data, long ticks)
     {
       if (!TryBeginChunk(name, data, out int index)) return;
-      try { CommitChunk(ParseChunk(index, data, ticks, m_CombinedFrames, m_FrameInterval)); }
+      EncodedChunkPool.Chunk chunk = null;
+      try
+      {
+        lock (m_ImportGate) chunk = m_ChunkPool.Parse(index, data, ticks, m_CombinedFrames, m_FrameInterval);
+        CommitChunk(chunk); chunk = null;
+      }
       catch (Exception exception) { RejectChunk(index, exception); }
+      finally { if (chunk != null) m_ChunkPool.Return(chunk); }
     }
 
-    // Called from the Unity thread: only byte parsing runs in the worker. Await
-    // returns to Unity's synchronization context before touching playback state.
+    // Only parsing owns the worker lease. Commit/decoder state remains on Unity's
+    // synchronization context; disposing a Receiver cannot recycle an active lease.
     public async Task<bool> AddVertexDataAsync(string name, byte[] data, long ticks)
     {
-      if (m_PlaybackState == StreamingPlaybackState.Disposed || data == null || data.Length == 0) return false;
-      if (!int.TryParse(name, out int index)) return false;
-      if (!m_ReceivedChunks.Add(index)) return true;
-      int combined = m_CombinedFrames;
-      float interval = m_FrameInterval;
+      if (m_PlaybackState == StreamingPlaybackState.Disposed || data == null || data.Length == 0 ||
+          !int.TryParse(name, out int index) || index < 0) return false;
+      EnsureEncodedStorage();
+      if (m_ReceivedChunks.Contains(index)) return true;
+      if (!CanAcceptChunk) return false;
+      m_ReceivedChunks.Add(index);
+      var pool = m_ChunkPool;
+      int combined = m_CombinedFrames; float interval = m_FrameInterval;
+      EncodedChunkPool.Chunk chunk = null;
       try
       {
 #if UNITY_WEBGL && !UNITY_EDITOR
-        var frames = ParseChunk(index, data, ticks, combined, interval);
+        lock (m_ImportGate) chunk = pool.Parse(index, data, ticks, combined, interval);
 #else
-        var frames = await Task.Run(() => ParseChunk(index, data, ticks, combined, interval));
+        chunk = await Task.Run(() => { lock (m_ImportGate) return pool.Parse(index, data, ticks, combined, interval); });
 #endif
         if (m_PlaybackState == StreamingPlaybackState.Disposed) return false;
-        CommitChunk(frames);
+        CommitChunk(chunk); chunk = null;
         return true;
       }
       catch (Exception exception) { RejectChunk(index, exception); return false; }
+      finally { if (chunk != null) pool.Return(chunk); }
     }
 
     bool TryBeginChunk(string name, byte[] data, out int index)
     {
       index = -1;
-      return m_PlaybackState != StreamingPlaybackState.Disposed && data != null && data.Length > 0 &&
-        int.TryParse(name, out index) && m_ReceivedChunks.Add(index);
+      if (m_PlaybackState == StreamingPlaybackState.Disposed || data == null || data.Length == 0 ||
+          !int.TryParse(name, out index) || index < 0) return false;
+      EnsureEncodedStorage();
+      return CanAcceptChunk && m_ReceivedChunks.Add(index);
     }
 
     void RejectChunk(int index, Exception exception)
@@ -341,45 +403,49 @@ namespace StreamingMesh.Core.Rendering
         Debug.LogWarning("StreamingMesh rejected stream chunk " + index + ": " + exception.Message);
     }
 
-    void CommitChunk(List<EncodedFrame> frames)
+    int FindEncoded(uint sequence)
     {
-      // Nothing is committed until the entire chunk passes validation.
-      foreach (var frame in frames)
-        if ((!m_HasDecodeCursor || frame.sequence >= m_NextDecodeSequence) && !m_EncodedFrames.ContainsKey(frame.sequence))
-          m_EncodedFrames.Add(frame.sequence, frame);
+      int lo = 0, hi = m_EncodedFrames.Count;
+      while (lo < hi)
+      {
+        int mid = lo + (hi - lo) / 2;
+        if (m_EncodedFrames[mid].sequence < sequence) lo = mid + 1; else hi = mid;
+      }
+      return lo;
     }
 
-    static List<EncodedFrame> ParseChunk(int chunkIndex, byte[] data, long ticks, int combined, float interval)
+    void CommitChunk(EncodedChunkPool.Chunk chunk)
     {
-      byte[] raw = StreamingMesh.Lib.ExternalTools.Decompress(data);
-      if (raw.Length < sizeof(int)) throw new InvalidOperationException("Missing frame-count header.");
-      int frameCount = BitConverter.ToInt32(raw, 0);
-      int sizeTableBytes = checked((frameCount + 1) * sizeof(int));
-      if (frameCount < 0 || sizeTableBytes > raw.Length) throw new InvalidOperationException("Invalid frame size table.");
-      var frames = new List<EncodedFrame>(frameCount);
-      int dataOffset = sizeTableBytes;
-      double start = ticks / (double)TimeSpan.TicksPerSecond;
-      for (int i = 0; i < frameCount; i++)
+      // Admission reserves room for the entire batch. No partial import on a
+      // malformed chunk or concurrent imports that consume the remaining room.
+      if (chunk.count > m_EncodedFrames.Capacity - m_EncodedFrames.Count)
+        throw new InvalidOperationException("Receiver frame ring is full.");
+      for (int i = 0; i < chunk.count; i++)
       {
-        int size = BitConverter.ToInt32(raw, (i + 1) * sizeof(int));
-        if (size < 21 || size > raw.Length - dataOffset) throw new InvalidOperationException("Invalid frame size.");
-        byte[] frame = new byte[size];
-        Buffer.BlockCopy(raw, dataOffset, frame, 0, size);
-        dataOffset += size;
-        if (frame[8] >= 2 && size < 29) throw new InvalidOperationException("Missing PTS header.");
-        frames.Add(new EncodedFrame {
-          sequence = frame[8] >= 1 ? BitConverter.ToUInt32(frame, 1) : (uint)(chunkIndex * combined + i),
-          presentationTime = frame[8] >= 2 ? BitConverter.ToInt64(frame, 21) / (double)TimeSpan.TicksPerSecond : start + i * interval,
-          isKeyframe = frame[0] == 0x0F, data = frame
-        });
+        var frame = chunk.frames[i];
+        if (m_HasDecodeCursor && frame.sequence < m_NextDecodeSequence) continue;
+        int at = FindEncoded(frame.sequence);
+        if (at < m_EncodedFrames.Count && m_EncodedFrames[at].sequence == frame.sequence) continue;
+        m_EncodedFrames.Insert(at, frame); chunk.retained++;
       }
-      if (dataOffset != raw.Length) throw new InvalidOperationException("Unexpected trailing chunk data.");
-      return frames;
+      // Duplicate bookkeeping is bounded too; old deltas are filtered by cursor.
+      int index = chunk.index;
+      int previous = m_RecentChunks[m_RecentChunkCursor];
+      if (previous >= 0) m_ReceivedChunks.Remove(previous);
+      m_RecentChunks[m_RecentChunkCursor] = index;
+      m_RecentChunkCursor = (m_RecentChunkCursor + 1) % m_RecentChunks.Length;
+      if (chunk.retained == 0) m_ChunkPool.Return(chunk);
+    }
+
+    void ReleaseEncodedFrame()
+    {
+      var frame = m_EncodedFrames.RemoveAt(0);
+      if (--frame.chunk.retained == 0) m_ChunkPool.Return(frame.chunk);
     }
 
     public void UpdateWithTime(double updateTime)
     {
-      if (m_PlaybackState == StreamingPlaybackState.Disposed)
+      if (m_PlaybackState == StreamingPlaybackState.Disposed || m_DecodedFrames == null)
         return;
 
       try { CollectGpuFrames(); }
@@ -395,7 +461,7 @@ namespace StreamingMesh.Core.Rendering
       double decodeDeadline = Time.realtimeSinceStartupAsDouble + 0.004;
       for (int i = 0; i < 8; i++)
       {
-        if (!PumpDecoder(updateTime) || m_DecodeInFlight ||
+        if (!PumpDecoder(updateTime) ||
             Time.realtimeSinceStartupAsDouble >= decodeDeadline)
           break;
       }
@@ -434,13 +500,13 @@ namespace StreamingMesh.Core.Rendering
 
     bool PumpDecoder(double playbackTime)
     {
-      if (m_DecodeInFlight || m_VertexContainer == null || m_VertexLayout == null)
+      if (m_VertexContainer == null || m_VertexLayout == null)
         return false;
       double queuedUntil = BufferedUntil;
       foreach (var pending in m_PendingGpuFrames) queuedUntil = pending.Time;
       if (m_DecodedFrames.Count + m_PendingGpuFrames.Count >= m_PrebufferFrames &&
           queuedUntil >= playbackTime + Math.Max(DecodeAheadSeconds, m_FrameInterval * 2)) return false;
-      EncodedFrame frame;
+      EncodedFrameSlice frame;
       if (!TrySelectDecodeFrame(out frame))
         return false;
       if (m_DecodedFrames.Count >= m_MaxDecodedFrames)
@@ -463,7 +529,7 @@ namespace StreamingMesh.Core.Rendering
         {
           GpuVertexPipeline.Frame gpuFrame;
           string error;
-          if (!m_GpuPipeline.TrySubmit(frame.data, frame.sequence, frame.presentationTime, out gpuFrame, out error))
+          if (!m_GpuPipeline.TrySubmit(frame.Data, frame.sequence, frame.presentationTime, out gpuFrame, out error))
           {
             if (error == null) return false;
             Debug.LogWarning("StreamingMesh frame " + frame.sequence + " was rejected: " + error);
@@ -480,78 +546,44 @@ namespace StreamingMesh.Core.Rendering
           return true;
         }
       }
-      m_DecodeInFlight = true;
-      m_VertexContainer.DecodeAsync(frame.data, m_VertexLayout, result =>
+      var decoded = RentDecodedFrame(true);
+      bool succeeded = m_VertexContainer.DecodeInto(frame.Data, decoded.vertices, out var root, out var errorMessage);
+      AdvanceDecodeCursor(frame.sequence, succeeded);
+      if (!succeeded)
       {
-        m_DecodeInFlight = false;
-        AdvanceDecodeCursor(frame.sequence, result.succeeded);
-
-        if (!result.succeeded)
-        {
-          Debug.LogWarning("StreamingMesh frame " + frame.sequence + " was rejected: " + result.error);
-          m_NeedsKeyframe = true;
-          m_HasDecodeCursor = true;
-          m_NextDecodeSequence = frame.sequence + 1;
-          return;
-        }
-
-        m_DecodedFrames.Add(new DecodedFrame
-        {
-          sequence = frame.sequence,
-          presentationTime = frame.presentationTime,
-          rootPosition = result.rootPosition,
-          vertices = result.vertices
-        });
-        m_DecodedFrames.Sort((left, right) => left.sequence.CompareTo(right.sequence));
-        m_NeedsKeyframe = false;
-        m_HasDecodeCursor = true;
-        m_NextDecodeSequence = frame.sequence + 1;
-      });
+        decoded.held = false;
+        Debug.LogWarning("StreamingMesh frame " + frame.sequence + " was rejected: " + errorMessage);
+        return true;
+      }
+      decoded.sequence = frame.sequence; decoded.presentationTime = frame.presentationTime;
+      decoded.rootPosition = root; decoded.gpuFrame = null;
+      m_DecodedFrames.Add(decoded);
       return true;
     }
 
     void AdvanceDecodeCursor(uint sequence, bool succeeded)
     {
-      var obsolete = new List<uint>();
-      foreach (var pair in m_EncodedFrames)
-      {
-        if (pair.Key > sequence) break;
-        obsolete.Add(pair.Key);
-      }
-      foreach (uint key in obsolete) m_EncodedFrames.Remove(key);
+      while (m_EncodedFrames.Count > 0 && m_EncodedFrames[0].sequence <= sequence) ReleaseEncodedFrame();
       m_NeedsKeyframe = !succeeded;
       m_HasDecodeCursor = true;
       m_NextDecodeSequence = sequence + 1;
     }
 
-    bool TrySelectDecodeFrame(out EncodedFrame selected)
+    bool TrySelectDecodeFrame(out EncodedFrameSlice selected)
     {
-      selected = null;
-      if (m_NeedsKeyframe || !m_HasDecodeCursor)
+      selected = default(EncodedFrameSlice);
+      if (m_EncodedFrames == null) return false;
+      int at = m_HasDecodeCursor ? FindEncoded(m_NextDecodeSequence) : 0;
+      if (!m_NeedsKeyframe && m_HasDecodeCursor && at < m_EncodedFrames.Count &&
+          m_EncodedFrames[at].sequence == m_NextDecodeSequence)
       {
-        foreach (KeyValuePair<uint, EncodedFrame> pair in m_EncodedFrames)
-        {
-          if (pair.Value.isKeyframe && (!m_HasDecodeCursor || pair.Key >= m_NextDecodeSequence))
-          {
-            selected = pair.Value;
-            return true;
-          }
-        }
-        return false;
+        selected = m_EncodedFrames[at]; return true;
       }
-
-      if (m_EncodedFrames.TryGetValue(m_NextDecodeSequence, out selected))
-        return true;
-
-      foreach (KeyValuePair<uint, EncodedFrame> pair in m_EncodedFrames)
-      {
-        if (pair.Key > m_NextDecodeSequence && pair.Value.isKeyframe)
+      for (int i = at; i < m_EncodedFrames.Count; i++)
+        if (m_EncodedFrames[i].isKeyframe)
         {
-          m_NeedsKeyframe = true;
-          selected = pair.Value;
-          return true;
+          selected = m_EncodedFrames[i]; m_NeedsKeyframe = true; return true;
         }
-      }
       return false;
     }
 
@@ -630,8 +662,9 @@ namespace StreamingMesh.Core.Rendering
         m_VertexContainer.Dispose();
         m_VertexContainer = null;
       }
-      m_EncodedFrames.Clear();
-      m_DecodedFrames.Clear();
+      if (m_EncodedFrames != null) while (m_EncodedFrames.Count > 0) ReleaseEncodedFrame();
+      m_ChunkPool?.Dispose();
+      ClearDecodedFrames();
       foreach (var mesh in m_MeshList) UnityEngine.Object.Destroy(mesh);
       foreach (var material in m_MaterialDictionary.Values) UnityEngine.Object.Destroy(material);
       foreach (var texture in m_TextureDictionary.Values) UnityEngine.Object.Destroy(texture);
@@ -640,6 +673,7 @@ namespace StreamingMesh.Core.Rendering
       m_MeshDictionary.Clear();
       m_MaterialDictionary.Clear();
       m_TextureDictionary.Clear();
+      m_DecodedPool = null; m_ReceivedChunks.Clear();
       m_VertexLayout = null;
       m_InterpolatedVertices = null;
       m_RecalculateNormals = null;
