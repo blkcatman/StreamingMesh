@@ -131,6 +131,12 @@ namespace StreamingMesh
     public GameObject targetGameObject;
     [Tooltip("Select a GPU block format supported by the target Receiver. BC7 targets desktop GPUs; ASTC/ETC2 require compatible devices. DXT1 and ETC2_RGB discard alpha.")]
     public GpuTextureFormat textureFormat = GpuTextureFormat.BC7;
+    public bool exportMultipleTextureFormats = true;
+    [Tooltip("Receiver selects the first supported format. These defaults retain alpha. DXT1 and ETC2_RGB discard alpha; add them only for opaque resources.")]
+    public GpuTextureFormat[] textureFormats = { GpuTextureFormat.BC7, GpuTextureFormat.ASTC_4x4,
+      GpuTextureFormat.ASTC_6x6, GpuTextureFormat.DXT5, GpuTextureFormat.ETC2_RGBA8 };
+    [Range(1, 128), Tooltip("Target decoded MiB per file. Whole resources share random-named files and are never split. Default 64 MiB; hard maximum 128 MiB.")]
+    public int initialPartSizeMiB = 64;
 
     [Header("Stream encoding")]
     [Min(1)] public int containerSize = 4;
@@ -493,8 +499,10 @@ namespace StreamingMesh
       serializer.Send(channelInfo);
       var textureList = new List<Texture>();
       foreach (string id in textureNames) textureList.Add(textures[id]);
-      InitialResourceExporter.Export(channelInfo, materialInfos, meshInfos, textureList, textureFormat,
-        (part, bytes) => serializer.Send(bytes, "combined", part.file));
+      InitialResourceExporter.ExportVariants(channelInfo, materialInfos, meshInfos, textureList,
+        exportMultipleTextureFormats ? textureFormats : new[] { textureFormat },
+        (part, bytes) => serializer.Send(bytes, "combined", part.file),
+        checked(initialPartSizeMiB * 1024 * 1024));
       serializer.PublishInitialData(channelInfo);
 #endif
     }

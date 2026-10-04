@@ -1,6 +1,6 @@
 # StreamingMesh エンコード／デコード仕様
 
-この文書は、事前データ `stream0.bin`、`stream1.bin` …、時系列頂点データ `*.stmv`、fMP4音声がどのように生成・配信され、受信側で復元されるかを、現在のプロトコルv5実装に沿って説明する。Meshフレーム形式はv2から変更しない。
+この文書は、事前データ `<ランダム32桁>.bin`、時系列頂点データ `*.stmv`、fMP4音声がどのように生成・配信され、受信側で復元されるかを、現在のプロトコルv5実装に沿って説明する。Meshフレーム形式はv2から変更しない。
 
 バイト単位のフィールド一覧は [STREAM_FORMAT.md](STREAM_FORMAT.md) も参照すること。
 
@@ -11,7 +11,7 @@
 | ファイル | 更新頻度 | 内容 |
 | --- | --- | --- |
 | `stream.json` | チャンネル作成時 | プロトコル、量子化設定、各データの名前とサイズ |
-| `stream0.bin`、`stream1.bin` … | チャンネル作成時 | メタデータとGPU圧縮Textureを最大16MiB単位でGZip圧縮 |
+| `<ランダム32桁>.bin` | チャンネル作成時 | 複数の完全なリソースをGZip圧縮、既定64MiB目安・最大128MiB |
 | `stream.stmj` | チャンク確定時に1行追記 | `.stmv` の名前、PTS範囲、シーケンス番号範囲 |
 | `000000.stmv` など | リアルタイム | キーフレームと差分フレームをまとめた頂点チャンク |
 | `audio-init.mp4` | 録音開始時 | AACトラックの初期化セグメント |
@@ -23,7 +23,7 @@
 ```text
 送信側／チャンネル作成
   Material / Mesh -> JSON -> メタデータ用の分割ファイル
-  Texture -> GPUブロック圧縮 -> 16MiBごとにGZip -> streamN.bin
+  Texture -> GPUブロック圧縮 -> リソース全体をGZipへ書く -> 64MiB目安で次のbinへ
     -> ID / GPU形式 / サイズ / セグメント / SHA-256 -> stream.jsonを最後に公開
 
 送信側／記録
@@ -36,7 +36,7 @@
     -> StreamInfoをstream.stmjに追記
 
 受信側
-  stream.json + streamN.bin
+  stream.json + <ランダム32桁>.bin
     -> 静的なMesh／Material／Textureを生成
   stream.stmj + *.stmv
     -> GZip展開
@@ -67,6 +67,8 @@
 - TextureのリソースID（プロジェクト相対パスのSHA-256等）をキーとして重複を除外する。
 - Unity EditorでGPU Blitして読み出し可能な一時Textureへ転送し、`EditorUtility.CompressTexture()` で選択したGPUブロック形式へ圧縮する。元アセットは再インポートしない。
 - sRGB／linearを保持し、NormalMapはインポート時のチャンネル配置から法線XYZを復元してRGBへ保存する。
+
+Senderは既定でBC7、ASTC 4×4、ASTC 6×6、DXT5、ETC2 RGBA8の5形式を書き出し、`stream.json.texture_variants`に各形式の目録を格納する。Receiverは寸法・sRGB／Linearを含むGPU対応状況を確認して先頭の対応形式を選び、その形式のファイルだけを読み込む。全形式のブロックを同時に保持しない。DXT1／ETC2 RGBはアルファを保持しないため、明示選択用とする。
 
 #### マテリアル
 
@@ -119,7 +121,7 @@ MeshInfo
 
 ### 3.2 分割ファイルへの格納
 
-Material JSON→Mesh JSON→GPU Textureの順で、1リソースずつ `InitialDataPartWriter` へ渡す。Writerは最大16MiBのバッファを再利用し、満杯またはメタデータ終了時にGZip圧縮する。既定名は `stream0.bin`、`stream1.bin` …。全モデルの `List<byte>` や `ToArray()` は作らない。
+Material JSON→Mesh JSON→GPU Textureの順で、1リソースずつ`InitialDataPartWriter`へ渡す。Writerは64KiBの作業バッファからGZipへ順次書き、1リソースを書き終わって既定64MiB目安（指定可能1〜128MiB）以上になった時にファイルを閉じる。次のリソースを追加すると128MiBを超える場合は追加前に閉じる。1枚のTextureの途中では分割しない。名前は毎回生成するランダム32桁＋`.bin`。全モデルの`List<byte>`や64MiBの展開後配列は作らない。GZip後のファイルの出力用メモリは必要である。
 
 `stream.json` の `initial_data` がファイル順、圧縮前後のサイズ、SHA-256、リソース種別・インデックス・各オフセットを持つ。大きなTextureは複数ファイルに分割する。詳細と上限は [STREAM_FORMAT.md](STREAM_FORMAT.md#v5の初期データ) を参照。
 
@@ -402,7 +404,7 @@ keyframeStep = containerSize / (floor(packageSize / 2) * 32)
 
 | 処理 | 実装 |
 | --- | --- |
-| `stream.json` / `streamN.bin` 生成 | `STMHttpSender.CreateInfos()` |
+| `stream.json` / `<ランダム32桁>.bin` 生成 | `STMHttpSender.CreateInfos()` |
 | metadata生成 | `STMHttpSerializer` / `InfoConverter` |
 | GZip圧縮・展開 | `Lib/ExternalTools.cs` |
 | キーフレームのGPUエンコード | `Resources/TilingShader.compute` |

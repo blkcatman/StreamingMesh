@@ -37,6 +37,7 @@ namespace StreamingMesh.Core.Rendering
     FrameRing<EncodedFrameSlice> m_EncodedFrames;
     EncodedChunkPool m_ChunkPool;
     readonly object m_ImportGate = new object();
+    int m_ImportGeneration;
     FrameRing<DecodedFrame> m_DecodedFrames;
     DecodedFrame[] m_DecodedPool;
     int[] m_RecentChunks;
@@ -178,6 +179,33 @@ namespace StreamingMesh.Core.Rendering
 
     public Dictionary<string, Texture2D> TextureDictionary { get { return m_TextureDictionary; } }
     public Dictionary<string, Material> MaterialDictionary { get { return m_MaterialDictionary; } }
+
+    public bool HasValidResources
+    {
+      get
+      {
+        foreach (var mesh in m_MeshList) if (mesh == null) return false;
+        foreach (var material in m_MaterialDictionary.Values) if (material == null) return false;
+        foreach (var texture in m_TextureDictionary.Values) if (texture == null) return false;
+        return m_PlaybackState != StreamingPlaybackState.Disposed;
+      }
+    }
+
+    public void ResetPlayback()
+    {
+      m_ImportGeneration++;
+      if (m_EncodedFrames != null) while (m_EncodedFrames.Count > 0) ReleaseEncodedFrame();
+      ClearDecodedFrames();
+      m_PendingGpuFrames.Clear();
+      m_GpuPipeline?.ResetPlayback();
+      m_VertexContainer?.ResetPlayback();
+      m_ReceivedChunks.Clear(); m_RecentChunkCursor = 0;
+      if (m_RecentChunks != null) for (int i = 0; i < m_RecentChunks.Length; i++) m_RecentChunks[i] = -1;
+      m_NeedsKeyframe = true; m_HasDecodeCursor = false; m_NextDecodeSequence = 0;
+      m_LastInterpolation = -1; m_LastPresentedSequence = uint.MaxValue;
+      PresentedTime = double.NaN;
+      m_PlaybackState = StreamingPlaybackState.WaitingForKeyframe;
+    }
 
     public GameObject RootGameObject
     {
@@ -383,6 +411,7 @@ namespace StreamingMesh.Core.Rendering
       if (!CanAcceptChunk) return false;
       m_ReceivedChunks.Add(index);
       var pool = m_ChunkPool;
+      int generation = m_ImportGeneration;
       int combined = m_CombinedFrames; float interval = m_FrameInterval;
       EncodedChunkPool.Chunk chunk = null;
       try
@@ -394,12 +423,12 @@ namespace StreamingMesh.Core.Rendering
 #else
         chunk = await Task.Run(() => { lock (m_ImportGate) return pool.Parse(index, data, ticks, combined, interval); });
 #endif
-        if (m_PlaybackState == StreamingPlaybackState.Disposed) return false;
+        if (m_PlaybackState == StreamingPlaybackState.Disposed || generation != m_ImportGeneration) return false;
         CommitChunk(chunk); chunk = null;
         if (LogMemoryDiagnostics) ReceiverMemoryDiagnostics.Log("chunk/committed",data.Length,index.ToString(),this);
         return true;
       }
-      catch (Exception exception) { RejectChunk(index, exception); return false; }
+      catch (Exception exception) { if (generation == m_ImportGeneration) RejectChunk(index, exception); return false; }
       finally { if (chunk != null) pool.Return(chunk); }
     }
 
@@ -669,6 +698,8 @@ namespace StreamingMesh.Core.Rendering
 
     public void Dispose()
     {
+      if (m_PlaybackState == StreamingPlaybackState.Disposed) return;
+      m_ImportGeneration++;
       m_PlaybackState = StreamingPlaybackState.Disposed;
       m_GpuPipeline?.Dispose();
       m_GpuPipeline = null;
@@ -681,9 +712,9 @@ namespace StreamingMesh.Core.Rendering
       if (m_EncodedFrames != null) while (m_EncodedFrames.Count > 0) ReleaseEncodedFrame();
       m_ChunkPool?.Dispose();
       ClearDecodedFrames();
-      foreach (var mesh in m_MeshList) UnityEngine.Object.Destroy(mesh);
-      foreach (var material in m_MaterialDictionary.Values) UnityEngine.Object.Destroy(material);
-      foreach (var texture in m_TextureDictionary.Values) UnityEngine.Object.Destroy(texture);
+      foreach (var mesh in m_MeshList) DestroyResource(mesh);
+      foreach (var material in m_MaterialDictionary.Values) DestroyResource(material);
+      foreach (var texture in m_TextureDictionary.Values) DestroyResource(texture);
       m_MeshList.Clear();
       m_MeshMaterialIds.Clear();
       m_MeshDictionary.Clear();
@@ -694,6 +725,13 @@ namespace StreamingMesh.Core.Rendering
       m_InterpolatedVertices = null;
       m_RecalculateNormals = null;
       m_RecalculateTangents = null;
+    }
+
+    static void DestroyResource(UnityEngine.Object resource)
+    {
+      if (resource == null) return;
+      if (Application.isPlaying) UnityEngine.Object.Destroy(resource);
+      else UnityEngine.Object.DestroyImmediate(resource);
     }
   }
 }

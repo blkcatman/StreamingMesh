@@ -34,30 +34,46 @@ v4ではMaterial／Textureの参照を表示名からリソースIDへ変更す�
 
 ## v5の初期データ
 
-既定のファイル名は `stream0.bin`、`stream1.bin` …。`stream0.bin` からMaterial JSON、Mesh JSONを格納し、メタデータの終わりでファイルを区切る。その後にGPU圧縮Textureを格納する。1ファイルの**展開後**サイズは最大16MiB。GZip後のサイズには最大64KiBの余裕を認める。ファイル順は `initial_data` 配列順であり、名前の辞書順や番号の解析には依存しない。
+ファイル名は書き出しごとに生成するランダムな32桁の16進文字列＋`.bin`。Material JSON→Mesh JSON→GPU圧縮Textureの順に、**1リソース全体**をGZipへ書き込む。テクスチャは1枚全体（全ミップを含む）を1リソースとし、複数のTextureを同じファイルへ格納できる。Senderはリソースをファイル間で分割しない。
+
+**展開後**64MiBを分割の目安とし、1リソースを書き終わった時点で目安以上ならファイルを閉じる。64MiBきっかりになるような切り出しはしない。次のリソースを追加すると絶対上限128MiBを超える場合は追加前に閉じる。目安はSenderの`initialPartSizeMiB`で1〜128MiBを指定できる。1リソースが128MiBを超える入力はエラーにする。GZip後のサイズには最大64KiBの余裕を認める。ファイル順は`initial_data`配列順であり、ファイル名には依存しない。
+
+ランダム名・複数リソースの混在は暗号化や解析防止を意味しない。Receiverに渡す目録には復元に必要な形式と境界情報を含む。リソースIDは元アセットのパスから生成し、配信用ファイル名とは独立している。
 
 ```json
 {
   "texturePayloads": [{"format":"BC7","width":8192,"height":8192,"mipCount":1,"linear":false}],
   "initial_data": [{
-    "file":"stream1.bin", "sha256":"<compressed-file SHA-256 hex>",
-    "size":16777216, "compressedSize":3088056,
-    "records":[{"kind":2,"index":0,"offset":0,"resourceOffset":0,"size":16777216}]
+    "file":"ed79b3a1e56a4a4099618155e74b52c7.bin", "sha256":"<compressed-file SHA-256 hex>",
+    "size":67108864, "compressedSize":6454245,
+    "records":[{"kind":2,"index":0,"offset":0,"resourceOffset":0,"size":67108864}]
   }]
 }
 ```
 
 - `kind`: Material=0、Mesh=1、Texture=2。`index` は対応するリソース表内のインデックス。
 - `offset`: 展開後のファイル内オフセット。`resourceOffset`: リソース全体内のオフセット。
-- `records` はMaterial→Mesh→Textureの表順で連続し、隙間・重複・欠落を認めない。Textureは複数ファイルにまたがってよい。
+- `records` はMaterial→Mesh→Textureの表順で連続し、隙間・重複・欠落を認めない。新しいSenderは1リソースを1レコードとして格納し、`resourceOffset`は0。Receiverの一般的なセグメント復元は維持する。
 - ファイル名は96文字以内のASCII英数字・`.`・`_`・`-`で、`.bin`で終わる安全なベース名。大文字・小文字を無視した重複、Windowsの予約名、ディレクトリ指定を拒否する。
 - `format`: `BC7`、`DXT1`、`DXT5`、`ETC2_RGB`、`ETC2_RGBA8`、`ASTC_4x4`、`ASTC_6x6`。GPU形式はSenderで選ぶ。Receiverが非対応ならエラーとして停止し、RGBAへの暗黙展開は行わない。DXT1／ETC2_RGBはアルファを保持しない。
 - `textureSizes` は全ミップのGPUブロックバイト数。1リソース最大128MiB、初期データ全体最大1GiB、最大4096ファイル。Material／Mesh JSONは1リソース最大16MiB。
 - ミップ数とlinearは明示する。Senderはミップ数を保持してミップを再生成するため、元の独自ミップ画像そのものは保持しない。
 
+### GPU形式の複数候補
+
+`texture_variants`に形式ごとの`format`、`textureSizes`、`texturePayloads`、`initial_data`を格納する。Material／TextureのIDとMeshキーはチャンネルで共通で、Material／Meshの定義も各候補に同じ内容を格納する。先頭候補をトップレベルの同名フィールドにも設定する。既定はBC7→ASTC_4x4→ASTC_6x6→DXT5→ETC2_RGBA8の優先順で、すべてアルファを保持する。Senderの`textureFormats`で変更でき、`exportMultipleTextureFormats=false`では`textureFormat`のみを書き出す。DXT1／ETC2_RGBも追加可能だが、アルファを失う。
+
+Receiverは候補のレイアウト・GPUブロックサイズを検証し、全TextureがGPUでサンプリング可能な最初の形式を選ぶ。OS名だけでは選ばない。選んだ候補だけをHTTP取得・復元し、他候補のTextureを確保しない。1GiBの初期データ上限は候補ごとに適用する。開発サーバーは全候補のファイルが揃い、サイズ・SHA-256が一致してから目録を公開する。
+
+確認用URLの`texture_format=DXT5`等で形式を指定できる。指定形式やどの候補も非対応の場合は明示的に停止し、PNGやRGBAへの暗黙変換はしない。候補を増やすとSenderの書き出し時間・サーバーの保存量は増えるが、Receiverは1候補だけをロードする。ASTC／ETC2の書き出し成功はモバイル実機上での描画成功を保証しない。
+
 Senderは空の目録でチャンネルを準備し、各分割ファイルを送信した後、`initialinfo=stream.json` で完成した目録を公開する。開発サーバーは全ファイルのサイズとSHA-256を検証してから目録を置換する。再作成中は一時的にチャンネルが未完成となる。旧目録で読み込み中のReceiverはハッシュ不一致なら停止し、再接続を必要とする。
 
-ReceiverはファイルのSHA-256とGZipの長さを検証し、64KiBの再利用バッファで展開する。Textureは `GetRawTextureData<byte>()` が返すCPU領域へ順にコピーし、全ブロックが揃った時点で `Apply(false, true)` してGPUへ転送・CPU領域を解放する。全体を連結する配列や、展開後の16MiB配列は作らない。使用しないTextureだけを含むファイルは要求しない。
+ランダム名の旧世代ファイルは自動削除しない。再書き出し後は新しい目録のファイルのみを使用するが、サーバーのディスク使用量は世代数に応じて増える。保持／清掃は別途サーバー側で管理する。
+
+ReceiverはファイルのSHA-256とGZipの長さを検証し、64KiBの再利用バッファで展開する。Textureは `GetRawTextureData<byte>()` が返すCPU領域へ順にコピーし、全ブロックが揃った時点で `Apply(false, true)` してGPUへ転送・CPU領域を解放する。全体を連結する配列や、展開後の64／128MiB配列は作らない。HTTP受信時にはGZip後のファイルを保持するため、圧縮率が低い入力では分割サイズを小さくする。使用しないTextureだけを含むファイルは要求しない。
+
+KAGURAのReconnectとReceiverのSeekでは、完成したモデルを1つだけ保持する。再取得した目録全体（ID、各ファイルのSHA-256、サイズ、セグメント、Texture形式を含む）、チャンネルURL、Shader／テンプレート参照、頂点出力設定が一致すると、Texture／Material／MeshとCPU／GPU再生バッファを再利用する。再生状態は空にして新しいキーフレームを待ち、古い非同期インポートは世代番号で拒否する。変更時は古いモデルを解放して再取得し、Disconnect／Receiver破棄で保持リソースも解放する。実行中にローカルテンプレートMaterialのプロパティ自体を書き換えた場合は`Reconnect(address, autoPlay, forceReload: true)`で明示的に再生成する。
 
 v5ではv4以前の初期データを受け付けない。MaterialInfo v3、Meshフレームv2、fMP4音声形式は維持する。
 

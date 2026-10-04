@@ -14,6 +14,8 @@ SenderのCreate Channelで、各Materialのプロパティ名と値を 初期デ
 
 マテリアルはチャンネル作成時のスナップショットであり、録画中の変更は毎フレーム送信しない。設定を変えて比較する場合はこの手順を繰り返す。チャンネル形式はv5、MaterialInfoはv3。旧形式のチャンネル／MaterialInfoは拒否するため、更新したSenderで作り直す必要がある。不正な数値も拒否する。
 
+Reconnect／Seekは、同じURL・選択したGPU形式の目録とSHA-256・Receiver設定が一致すれば既存のMaterial／Texture／Meshと再生バッファを再利用する。Senderの内容を更新して目録が変わると再取得する。ローカルテンプレートのプロパティを実行中に直接変更した場合は`Receiver.Reconnect(address, autoPlay, forceReload: true)`で再生成する。DisconnectはReceiverを破棄し、保持リソースも解放する。
+
 ## Receiver設定
 
 | 設定 | 用途 |

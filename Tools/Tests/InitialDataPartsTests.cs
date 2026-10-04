@@ -16,6 +16,8 @@ static class InitialDataPartsTests
     var random = new Random(17); foreach (var bytes in resources) random.NextBytes(bytes);
     for (int i = 0; i < 3; i++) writer.Write(i, 0, resources[i]);
     writer.Flush();
+    var names = new HashSet<string>();
+    foreach (var part in writer.Parts) Check(part.file.Length == 36 && InitialDataParts.ValidFileName(part.file) && names.Add(part.file));
     var sizes = new[] { new[] { 19 }, new[] { 58 }, new[] { 71 } };
     InitialDataParts.Validate(writer.Parts, sizes[0], sizes[1], sizes[2]);
     int consumed = 0;
@@ -53,8 +55,28 @@ static class InitialDataPartsTests
     var resource = new byte[17 * 1024 * 1024]; var textureSizes = new List<int>();
     for (int i = 0; i < 8; i++) { big.Write(2, i, resource); textureSizes.Add(resource.Length); }
     big.Flush(); InitialDataParts.Validate(big.Parts, new int[0], new int[0], textureSizes);
-    Check(big.Parts.Count == 9);
+    Check(big.Parts.Count == 2 && big.Parts[0].size == 68 * 1024 * 1024);
+    Check(big.Parts[0].records.Count == 4); // Several textures in one file.
+    foreach (var part in big.Parts) foreach (var segment in part.records)
+      Check(segment.resourceOffset == 0 && segment.size == resource.Length); // No texture is split.
+    var tooLarge = new InitialDataPart { file = "budget.bin", sha256 = new string('a', 64),
+      size = InitialDataParts.MaximumPartBytes + 1, compressedSize = 10,
+      records = new List<InitialDataSegment> { new InitialDataSegment { kind = 2, size = 1 } } };
+    Reject(() => InitialDataParts.Validate(new[] { tooLarge }, new int[0], new int[0], new[] { 1 }));
     Reject(() => InitialDataParts.Validate(big.Parts, new int[0], new int[0], new[] { InitialDataParts.MaximumResourceBytes + 1 }));
+    using (var hard = new InitialDataPartWriter((p, data) => Check(p.size <= InitialDataParts.MaximumPartBytes), InitialDataParts.MaximumPartBytes))
+    {
+      for (int i = 0; i < 8; i++) hard.Write(2, i, resource);
+      hard.Flush(); InitialDataParts.Validate(hard.Parts, new int[0], new int[0], textureSizes);
+      Check(hard.Parts.Count == 2 && hard.Parts[0].size == 119 * 1024 * 1024);
+    }
+    int published = 0;
+    using (var incomplete = new InitialDataPartWriter((p, data) => published++))
+    {
+      Reject(() => incomplete.Write(2, 0, new MemoryStream(new byte[3]), 4));
+      incomplete.Flush(); Check(published == 0);
+    }
+    big.Dispose(); writer.Dispose();
     Console.WriteLine("PASS initial data parts: " + checks + " checks");
   }
 }

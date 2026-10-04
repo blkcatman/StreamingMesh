@@ -23,7 +23,9 @@ namespace StreamingMesh.Core.Serialization
   public static class InitialDataParts
   {
     public const int Material = 0, Mesh = 1, Texture = 2;
-    public const int MaximumPartBytes = 16 * 1024 * 1024;
+    public const int DefaultPartBytes = 64 * 1024 * 1024;
+    public const int MaximumPartBytes = 128 * 1024 * 1024;
+    public const int MaximumMetadataBytes = 16 * 1024 * 1024;
     public const int MaximumResourceBytes = 128 * 1024 * 1024;
     public const long MaximumTotalBytes = 1024L * 1024 * 1024;
     public const int MaximumParts = 4096;
@@ -131,18 +133,22 @@ namespace StreamingMesh.Core.Serialization
   }
 
   // Export one resource at a time. Never build a combined array for the entire model.
-  public sealed class InitialDataPartWriter
+  public sealed class InitialDataPartWriter : IDisposable
   {
-    readonly byte[] buffer;
+    readonly byte[] scratch = new byte[64 * 1024];
+    readonly int targetBytes;
     readonly Action<InitialDataPart, byte[]> publish;
     readonly List<InitialDataSegment> records = new List<InitialDataSegment>();
+    MemoryStream output;
+    GZipStream gzip;
     int used;
+    bool disposed;
     public readonly List<InitialDataPart> Parts = new List<InitialDataPart>();
 
-    public InitialDataPartWriter(Action<InitialDataPart, byte[]> publish, int partBytes = InitialDataParts.MaximumPartBytes)
+    public InitialDataPartWriter(Action<InitialDataPart, byte[]> publish, int partBytes = InitialDataParts.DefaultPartBytes)
     {
       if (publish == null || partBytes <= 0 || partBytes > InitialDataParts.MaximumPartBytes) throw new ArgumentException("Invalid part writer.");
-      this.publish = publish; buffer = new byte[partBytes];
+      this.publish = publish; targetBytes = partBytes;
     }
 
     public void Write(int kind, int index, byte[] resource)
@@ -153,39 +159,56 @@ namespace StreamingMesh.Core.Serialization
 
     public void Write(int kind, int index, Stream resource, int length)
     {
+      if (disposed) throw new ObjectDisposedException(nameof(InitialDataPartWriter));
       if (resource == null || length <= 0 || length > InitialDataParts.MaximumResourceBytes)
         throw new InvalidDataException("Invalid initial resource.");
-      int offset = 0;
-      while (offset < length)
+      // 64 MiB is a target, not a slicing boundary. Finish each whole resource
+      // before rotating. Only the hard 128 MiB ceiling forces a pre-flush.
+      if (used > InitialDataParts.MaximumPartBytes - length) Flush();
+      if (output == null)
       {
-        int count = Math.Min(buffer.Length - used, length - offset);
-        int read = 0;
-        while (read < count)
-        {
-          int n = resource.Read(buffer, used + read, count - read);
-          if (n == 0) throw new InvalidDataException("Truncated initial resource.");
-          read += n;
-        }
-        records.Add(new InitialDataSegment { kind = kind, index = index, offset = used, resourceOffset = offset, size = count });
-        used += count; offset += count;
-        if (used == buffer.Length) Flush();
+        output = new MemoryStream();
+        gzip = new GZipStream(output, CompressionLevel.Fastest, true);
       }
+      int read = 0;
+      try
+      {
+        while (read < length)
+        {
+          int n = resource.Read(scratch, 0, Math.Min(scratch.Length, length - read));
+          if (n == 0) throw new InvalidDataException("Truncated initial resource.");
+          gzip.Write(scratch, 0, n); read += n;
+        }
+      }
+      catch { Dispose(); throw; } // Never publish a partially written resource.
+      records.Add(new InitialDataSegment { kind = kind, index = index, offset = used, resourceOffset = 0, size = length });
+      used += length;
+      if (used >= targetBytes) Flush();
     }
 
     public void Flush()
     {
       if (used == 0) return;
       byte[] compressed;
-      using (var output = new MemoryStream())
+      try
       {
-        using (var gzip = new System.IO.Compression.GZipStream(output, System.IO.Compression.CompressionLevel.Fastest, true))
-          gzip.Write(buffer, 0, used);
+        gzip.Dispose(); gzip = null;
         compressed = output.ToArray();
       }
+      finally { gzip?.Dispose(); gzip = null; output.Dispose(); output = null; }
       if (Parts.Count >= InitialDataParts.MaximumParts) throw new InvalidDataException("Too many initial-data parts.");
-      var part = new InitialDataPart { file = "stream" + Parts.Count + ".bin", size = used, compressedSize = compressed.Length,
+      var part = new InitialDataPart { file = Guid.NewGuid().ToString("N") + ".bin", size = used, compressedSize = compressed.Length,
         sha256 = InitialDataParts.Hash(compressed), records = new List<InitialDataSegment>(records) };
       Parts.Add(part); publish(part, compressed); records.Clear(); used = 0;
+    }
+
+    public void Dispose()
+    {
+      if (disposed) return;
+      disposed = true;
+      gzip?.Dispose(); gzip = null;
+      output?.Dispose(); output = null;
+      records.Clear(); used = 0;
     }
   }
 

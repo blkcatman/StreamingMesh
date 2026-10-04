@@ -58,6 +58,7 @@ namespace StreamingMesh.Core.Serialization
     public List<int> textureSizes;
     public List<TexturePayloadInfo> texturePayloads;
     public List<InitialDataPart> initial_data;
+    public List<TextureVariantInfo> texture_variants;
     public string stream_info;
     public string audio_info;
     public string audio_clip;

@@ -179,6 +179,8 @@ class Handler(BaseHTTPRequestHandler):
                     parts = info.get("initial_data")
                     if not parts:
                         continue
+                    for variant in info.get("texture_variants") or []:
+                        parts = parts + variant["initial_data"]
                     data_paths = [self._safe_path(root, part["file"]) for part in parts]
                     if any(not path.is_file() or path.stat().st_size != part["compressedSize"]
                            for path, part in zip(data_paths, parts)):
@@ -275,13 +277,35 @@ class Handler(BaseHTTPRequestHandler):
             parts = info["initial_data"]
             if info["protocol_version"] != 5 or not isinstance(parts, list) or not 1 <= len(parts) <= 4096:
                 raise ValueError("Invalid initial manifest")
-            names = set()
-            for part in parts:
+            variants = info.get("texture_variants") or []
+            if not isinstance(variants, list) or len(variants) > 7:
+                raise ValueError("Invalid texture variants")
+            formats = set()
+            groups = [parts]
+            for variant in variants:
+                if variant["format"] not in {"BC7", "DXT1", "DXT5", "ETC2_RGB", "ETC2_RGBA8", "ASTC_4x4", "ASTC_6x6"} or variant["format"] in formats:
+                    raise ValueError("Invalid/duplicate texture variant format")
+                formats.add(variant["format"])
+                group = variant["initial_data"]
+                if not isinstance(group, list) or not 1 <= len(group) <= 4096:
+                    raise ValueError("Invalid variant files")
+                if len({part["file"].lower() for part in group}) != len(group):
+                    raise ValueError("Duplicate variant filename")
+                groups.append(group)
+            if len({part["file"].lower() for part in parts}) != len(parts):
+                raise ValueError("Duplicate initial filename")
+            files = {}
+            for group in groups:
+                for part in group:
+                    name = part["file"].lower()
+                    if name in files and files[name] != part:
+                        raise ValueError("Conflicting shared initial file")
+                    files[name] = part
+            for part in files.values():
                 name = part["file"]
-                if not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,91}\.bin", name) or name.lower() in names:
+                if not re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,91}\.bin", name):
                     raise ValueError("Invalid or duplicate initial filename")
-                names.add(name.lower())
-                if not 0 < part["size"] <= 16 * 1024 * 1024 or not 0 < part["compressedSize"] <= 16 * 1024 * 1024 + 65536:
+                if not 0 < part["size"] <= 128 * 1024 * 1024 or not 0 < part["compressedSize"] <= 128 * 1024 * 1024 + 65536:
                     raise ValueError("Invalid initial part size")
                 path = self._safe_path(root, name)
                 with path.open("rb") as source:

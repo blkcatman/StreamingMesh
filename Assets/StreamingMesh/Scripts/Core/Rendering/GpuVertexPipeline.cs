@@ -397,6 +397,14 @@ namespace StreamingMesh.Core.Rendering
 
     public void Release(Frame frame) { if(frame!=null) frame.held=false; }
 
+    public void ResetPlayback()
+    {
+      m_HasKeyframe = false;
+      foreach (var frame in m_Frames) frame.held = false;
+      // Keep submitted fences/readbacks: a slot cannot be reused until its
+      // previous GPU work completes. The next keyframe replaces decode state.
+    }
+
     public void Present(Frame previous, Frame next, float interpolation)
     {
       if(m_Disposed) throw new ObjectDisposedException(nameof(GpuVertexPipeline));

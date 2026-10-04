@@ -48,13 +48,20 @@ namespace StreamingMesh.Core.Serialization
       return (int)total;
     }
 
+    public bool IsSupported()
+    {
+      var unityFormat = UnityFormat();
+      var graphicsFormat = GraphicsFormatUtility.GetGraphicsFormat(unityFormat, !linear);
+      return width <= SystemInfo.maxTextureSize && height <= SystemInfo.maxTextureSize &&
+        SystemInfo.SupportsTextureFormat(unityFormat) && SystemInfo.IsFormatSupported(graphicsFormat, GraphicsFormatUsage.Sample);
+    }
+
     public Texture2D Create()
     {
       ByteCount();
       var unityFormat = UnityFormat();
       var graphicsFormat = GraphicsFormatUtility.GetGraphicsFormat(unityFormat, !linear);
-      if (width > SystemInfo.maxTextureSize || height > SystemInfo.maxTextureSize ||
-          !SystemInfo.SupportsTextureFormat(unityFormat) || !SystemInfo.IsFormatSupported(graphicsFormat, GraphicsFormatUsage.Sample))
+      if (!IsSupported())
         throw new NotSupportedException("GPU texture " + format + " is unsupported on " + SystemInfo.graphicsDeviceType + ". Export a format supported by this Receiver.");
       var texture = new Texture2D(width, height, unityFormat, mipCount, linear);
       try

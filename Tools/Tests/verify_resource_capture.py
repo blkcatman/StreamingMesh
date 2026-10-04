@@ -9,10 +9,14 @@ from pathlib import Path
 
 parser = argparse.ArgumentParser()
 parser.add_argument("channel", type=Path)
+parser.add_argument("--texture-format", help="Validate a specific GPU variant; default is the primary manifest")
 args = parser.parse_args()
 root = args.channel
 read_json = lambda path: json.loads(path.read_text(encoding="utf-8-sig"))
 info = read_json(root / "stream.json")
+if args.texture_format:
+    variant = next(v for v in info["texture_variants"] if v["format"] == args.texture_format)
+    for key in ("textureSizes", "texturePayloads", "initial_data"): info[key] = variant[key]
 assert info["protocol_version"] in (4, 5), "Expected v5 or archived v4 channel"
 for ids in (info["materials"], info["textures"]):
     assert len(set(ids)) == len(ids) and all(re.fullmatch("[0-9a-f]{64}", key) for key in ids)
@@ -43,7 +47,7 @@ else:
         assert len(compressed) == part["compressedSize"]
         assert hashlib.sha256(compressed).hexdigest() == part["sha256"]
         data = gzip.decompress(compressed)
-        assert len(data) == part["size"] and 0 < len(data) <= 16 * 1024 * 1024
+        assert len(data) == part["size"] and 0 < len(data) <= 128 * 1024 * 1024
         offset = 0
         for segment in part["records"]:
             while kind < 3 and index == len(sizes[kind]):

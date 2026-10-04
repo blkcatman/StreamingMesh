@@ -675,6 +675,12 @@ namespace StreamingMesh.Core
       m_DeltaCapacity = 0;
     }
 
+    public void ResetPlayback()
+    {
+      if (m_DecodeInFlight) throw new InvalidOperationException("Cannot reset an active decoder.");
+      m_HasKeyframe = false;
+    }
+
     public void Dispose()
     {
       m_DisposeRequested = true;

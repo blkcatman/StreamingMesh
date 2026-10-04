@@ -230,7 +230,9 @@ python Tools/Tests/summarize_texture_compression.py
 KAGURA ID配信のPNGヘッダーを読み直すと8Kは5枚、2Kは15枚だったため、初期ロード診断節の枚数を訂正した。すべてをMipなしBC7へ置き換えるだけでも圧縮ブロックは合計380 MiBとなり、現在の初期データ展開上限128 MiBを超える。実装時は全Textureを単一stream.binへまとめる方式の見直し、個別リソースの配信、対応形式の選択とメタデータ（形式・寸法・Mip・sRGB等）の検証が必要。小さいfixtureで書き出せたことだけではETC2／ASTCの実機ロードやKAGURA全体のメモリ削減を保証しない。
 
 
-## v5：GPU圧縮Texture・GZip分割配信（2026-10-04）
+## v5初期検証：GPU圧縮Texture・GZip分割配信（2026-10-04）
+
+この節は16MiBでTextureを分割した初期実装の記録。現在のリソース単位分割・複数形式・再接続再利用は次節を参照。
 
 SenderのCreate Channelは、`textureFormat`でGPU形式を選び、Material／Mesh JSONを先に格納し、GPUブロックを展開後最大16MiBの`stream0.bin`、`stream1.bin` …へ書き出す。各ファイルはGZip Fastestで圧縮する。`stream.json`には形式・寸法・ミップ数・linear、各ファイルのサイズ・SHA-256とセグメント表を格納し、全ファイルの送信後に公開する。Receiverは64KiBの再利用バッファからTextureのCPU領域へ展開し、`Apply(false, true)`する。PNG LoadImageや全Textureの結合配列は使わない。
 
@@ -270,3 +272,44 @@ python Tools/streamingmesh_dev_server.py --port 8002 --web-root Builds/IndexedRe
 `http://127.0.0.1:8002/viewer/?channel=http%3A%2F%2F127.0.0.1%3A8002%2Fchannels%2Fchannel_KAGURA_INDEX%2F` を開く。音声の自動再生が保留された場合は画面をクリックし、DOMのaudio.currentTimeとReceiver表示時間が進むことを確認する。容量／使用量はチェックポイント・拡張イベント・2秒間隔メトリクスの最大値であり、瞬間的な使用量の全ピークを保証しない。
 
 実データは`DevData/channels/channel_KAGURA_INDEX`、ビルドは`Builds/IndexedReceiver`。記録は`Logs/IndexedResources-export-native.log`、`IndexedResources-encoders.log`、`IndexedResources-capture-summary.json`、`IndexedResources-WebGPU-summary.json`、`IndexedResources-WebGPU-merged-console.json`、`IndexedResources-WebGPU-metrics.json`、`IndexedResources-WebGPU-reconnect-console.json`。終端画面は`Logs/IndexedResources-WebGPU.png`。
+
+## リソース単位分割・Reconnect再利用・複数GPU形式（2026-10-04）
+
+Senderは既定でBC7 → ASTC 4×4 → ASTC 6×6 → DXT5 → ETC2 RGBA8の5形式を同じチャンネルへ書き出す。順序はSenderの優先順位で、ReceiverはGPUが全Textureの寸法・形式・sRGB／Linearに対応する最初のvariantを選ぶ。OS名で固定しない。選ばれた形式だけを読み込み、非対応形式の初期データはダウンロードしない。DXT1／ETC2 RGBも選択できるが、アルファを失うため既定から除外した。対応形式がなければ、Texture生成前に接続を中止する。
+
+各ファイル名はランダムな32桁hexと`.bin`。複数の完全なリソースをまとめ、64MiBを目安に次のファイルへ進む。Texture1枚を境界で切らないため、64MiB超は許容する。次のリソースで128MiBを超える場合は先にファイルを閉じ、リソース自体が128MiBを超える場合は拒否する。容量はGZip展開後を基準にし、Senderも64KiBの再利用バッファから直接GZipへ書き込む。64MiBの展開済み配列は確保しない。ランダム名は難読化・暗号化ではなく、目録とファイルからリソースを復元できる。
+
+独立したUnity 6000.5.10f1／URP 17.5の検証プロジェクトで、同じKAGURA Prefabを本番Exporterに渡し、20 Textureすべてを5形式へ変換した。既存29チャンク・8628フレーム・29音声セグメントを再利用し、動作の再収録はしていない。
+
+| 形式 | 初期データファイル数 | Texture GPUブロック合計 | GZipファイル合計 |
+| --- | ---: | ---: | ---: |
+| BC7 | 6 | 398,458,880 B | 23,544,224 B |
+| ASTC 4×4 | 6 | 398,458,880 B | 20,578,767 B |
+| ASTC 6×6 | 3 | 177,347,840 B | 19,344,855 B |
+| DXT5 | 6 | 398,458,880 B | 15,712,287 B |
+| ETC2 RGBA8 | 6 | 398,458,880 B | 16,052,655 B |
+
+27ファイル合計95,232,788 B。各形式の目録を検証し、Textureの分割レコードは0件。BC7のファイルは展開後65.905／64／64／68／64／56MiBで、末尾ファイルには14枚が入る。8K・BC7の1枚64MiBは自然に単独ファイルになる場合がある。形式ごとにMaterial／Meshのメタデータを含むため、その分の重複は残る。
+
+KAGURAのConnect／ReconnectはReceiverを保持する。同じチャンネルURL・選択済み目録のID／SHA-256・Shader設定・復元設定が一致すれば、既存のTexture／Material／Mesh・CPU／GPU配列・チャンクプールを再利用し、再生状態だけをリセットする。IDが同じでも内容のハッシュが変われば再構築する。Disconnectは保持リソースを解放する。ローカルMaterialテンプレートのプロパティを実行中に直接変更した場合は参照が変わらないため、`Reconnect(..., forceReload: true)`で明示更新する。
+
+Native検証ではCPU／GPUパイプラインと各Unityリソースの同一インスタンス維持、チャンク0の再インポート、古い非同期処理の拒否、ハッシュ／接線設定変更によるキャッシュ無効化を確認した。初期データ182項目とサーバー公開テスト2件も通過。サーバーは主目録だけでなく全variantのファイルの存在・サイズ・SHA-256を確認してからstream.jsonを公開する。
+
+RTX 4090 Laptop GPUのブラウザWebGPUでは自動選択のBC7と、`texture_format=DXT5`による強制選択で、それぞれ13 Mesh／20 Texture・Mip1・CPU画素非保持を確認した。音声時刻は287.583176秒／287.584052秒まで進み、画面も終端まで更新された。検証中にエラー／OOMは観測しなかった。BC7で2回Reconnectし、キャッシュヒットと再生再開を確認。HTTPアクセスはBC7の6ファイル各1回、DXT5の6ファイル各1回、ASTC／ETC2は0回で、再接続による初期データの再ダウンロードはなかった。
+
+2秒間隔の診断で、BC7（最初のwarm Reconnect後の全尺再生を含む）のWASM容量最大373.375MiB／使用量最大305.768MiB、DXT5は366.0MiB／302.809MiBを観測した。プールは68,222,976 Bを再利用するが、HTTP・音声・診断・GCタイミングを含むヒープ全体の容量一定を保証しない。Textureの再構築を避けたことと、再接続を何度繰り返しても容量が増えないことは区別する。選択されなかった形式はGPUへロードしていない。ASTC／ETC2の対応モバイルGPU、WebGL 2、Source Unity 6000.6.3f1／URP 17.6での実描画は未検証。SenderのCreateChannelからHTTP送信までの追加Unityテストは前節のとおり未実行で、共用ExporterとWeb読み込みの検証結果として扱う。
+
+Webビルドヘルパーと検証ビルドは`PlayerSettings.runInBackground = true`を明示する。非表示タブに対するブラウザの描画／タイマー制限は別途残る。データ再公開時の旧ランダムファイルは自動削除せず、公開済み世代のファイルを保持する。更新を繰り返すとディスク使用量が増えるため、利用終了した世代の整理は別途必要。
+
+```powershell
+./Tools/Tests/verify_indexed_resources.ps1 -EditorPath 'C:/Program Files/Unity/Hub/Editor/6000.5.10f1/Editor/Unity.exe' -Output Builds/MultiFormatReceiver -ChannelOutput DevData/channels/channel_KAGURA_MULTI
+dotnet run --project Tools/Tests/InitialDataPartsTests.csproj
+python -m unittest discover -s Tools/Tests -p 'test_server*.py'
+python Tools/Tests/verify_resource_capture.py DevData/channels/channel_KAGURA_MULTI --texture-format ASTC_6x6
+python Tools/Tests/instrument_web_receiver.py Builds/MultiFormatReceiver/index.html --trace-growth
+python Tools/streamingmesh_dev_server.py --port 8005 --web-root Builds/MultiFormatReceiver --data-root DevData/channels
+```
+
+自動選択のURLは`http://127.0.0.1:8005/viewer/?channel=http%3A%2F%2F127.0.0.1%3A8005%2Fchannels%2Fchannel_KAGURA_MULTI%2F`。DXT5の確認には末尾へ`&texture_format=DXT5`を追加する。音声が自動再生待ちの場合は画面をクリックする。
+
+記録は`Logs/MultiFormatReceiver-verification.log`、`MultiFormatReceiver-capture-summary.json`、`MultiFormatReceiver-requests.json`、`MultiFormatReceiver-WebGPU-summary.json`、`MultiFormatReceiver-BC7-console.json`、`MultiFormatReceiver-BC7-reconnect-console.json`、`MultiFormatReceiver-BC7-metrics.json`、`MultiFormatReceiver-DXT5-console.json`、`MultiFormatReceiver-DXT5-metrics.json`。画面は`Logs/MultiFormatReceiver-BC7.png`と`Logs/MultiFormatReceiver-DXT5.png`。

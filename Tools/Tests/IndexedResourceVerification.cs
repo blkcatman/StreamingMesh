@@ -20,6 +20,7 @@ public static class IndexedResourceVerification
     {
       PlayerSettings.colorSpace = ColorSpace.Linear;
       VerifyEncoders();
+      VerifyReconnect();
       Debug.Log("PASS production encoders and mips"); EditorApplication.Exit(0);
     }
     catch (Exception error) { Debug.LogException(error); EditorApplication.Exit(1); }
@@ -31,6 +32,7 @@ public static class IndexedResourceVerification
     {
       PlayerSettings.colorSpace = ColorSpace.Linear;
       string output = Path.GetFullPath(Argument("-indexedOutput"));
+      VerifyReconnect();
       if (!Environment.GetCommandLineArgs().Contains("-indexedBuildOnly"))
       {
       VerifyEncoders();
@@ -70,8 +72,9 @@ public static class IndexedResourceVerification
       Check(textures.Count == oldInfo.textures.Count && oldInfo.textures.All(textures.ContainsKey), "Texture IDs changed");
       var channelInfo = serializer.CreateChannelInfo(oldInfo.container_size, oldInfo.package_size, oldInfo.frame_interval, oldInfo.combined_frames,
         oldInfo.meshes, oldInfo.materials, oldInfo.textures, new List<int>(), new List<int>(), new List<int>(), oldInfo.textureNames);
-      InitialResourceExporter.Export(channelInfo, oldInfo.materials.Select(id => materials[id]).ToList(), meshInfos,
-        oldInfo.textures.Select(id => textures[id]).ToList(), GpuTextureFormat.BC7,
+      InitialResourceExporter.ExportVariants(channelInfo, oldInfo.materials.Select(id => materials[id]).ToList(), meshInfos,
+        oldInfo.textures.Select(id => textures[id]).ToList(), new[] { GpuTextureFormat.BC7, GpuTextureFormat.ASTC_4x4,
+          GpuTextureFormat.ASTC_6x6, GpuTextureFormat.DXT5, GpuTextureFormat.ETC2_RGBA8 },
         (part, bytes) => File.WriteAllBytes(Path.Combine(channel, part.file), bytes));
       foreach (var file in Directory.GetFiles(fixture))
         if (!new[] { "stream.bin", "stream.json" }.Contains(Path.GetFileName(file))) File.Copy(file, Path.Combine(channel, Path.GetFileName(file)), true);
@@ -79,6 +82,19 @@ public static class IndexedResourceVerification
       long bytesTotal = channelInfo.textureSizes.Sum(size => (long)size);
       long compressedTotal = channelInfo.initial_data.Sum(part => (long)part.compressedSize);
       Debug.Log($"STM_INDEX_EXPORT parts={channelInfo.initial_data.Count} textures={textures.Count} rawTextureBytes={bytesTotal} compressedTotalBytes={compressedTotal}");
+      foreach (var variant in channelInfo.texture_variants)
+      {
+        Check(variant.initial_data.SelectMany(part => part.records).All(record => record.resourceOffset == 0), "A resource was split between files");
+        var copy = JsonUtility.FromJson<ChannelInfo>(JsonUtility.ToJson(channelInfo));
+        string selected = TextureVariants.Select(copy, supported: payload => payload.format == variant.format);
+        Check(selected == variant.format && copy.texturePayloads.All(payload => payload.format == selected) && copy.texture_variants == null,
+          "Platform selection did not isolate the selected variant");
+        Debug.Log($"STM_INDEX_VARIANT format={selected} parts={copy.initial_data.Count} bytes={copy.textureSizes.Sum(size => (long)size)} compressed={copy.initial_data.Sum(part => (long)part.compressedSize)} atomic=true selection=true");
+      }
+      bool unsupportedRejected = false;
+      try { TextureVariants.Select(JsonUtility.FromJson<ChannelInfo>(JsonUtility.ToJson(channelInfo)), supported: payload => false); }
+      catch (NotSupportedException) { unsupportedRejected = true; }
+      Check(unsupportedRejected, "Unsupported variants did not stop loading");
       VerifyNative(channelInfo, channel);
       UnityEngine.Object.DestroyImmediate(serializerObject); UnityEngine.Object.DestroyImmediate(source);
       }
@@ -109,6 +125,12 @@ public static class IndexedResourceVerification
     catch (Exception error) { Debug.LogException(error); EditorApplication.Exit(1); }
   }
 
+  public static void VerifyReconnectCommandLine()
+  {
+    try { VerifyReconnect(); Debug.Log("PASS reconnect resources and stale worker rejection"); EditorApplication.Exit(0); }
+    catch (Exception error) { Debug.LogException(error); EditorApplication.Exit(1); }
+  }
+
   static void VerifyNative(ChannelInfo info, string channel)
   {
     var textures = new Dictionary<string, Texture2D>();
@@ -126,6 +148,81 @@ public static class IndexedResourceVerification
       Debug.Log("STM_INDEX_NATIVE PASS textures=20 format=BC7 readable=false materialAppearance=true");
     }
     finally { foreach (var texture in textures.Values) UnityEngine.Object.DestroyImmediate(texture); }
+  }
+
+  static void VerifyReconnect()
+  {
+    const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+    var gameObject = new GameObject("reconnect-verification"); gameObject.SetActive(false);
+    var receiver = gameObject.AddComponent<Receiver>();
+    var renderer = new StreamingMesh.Core.Rendering.StreamingMeshRenderer {
+      DecodeBackend = StreamingMesh.Core.Rendering.ReceiverDecodeBackend.GPU, CombinedFrames = 2, FrameInterval = 1 };
+    var methods = typeof(ReceiverTangentVerification);
+    var mesh = (Mesh)methods.GetMethod("Fixture", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, null);
+    var vertices = mesh.vertices;
+    var keyframe = (byte[])methods.GetMethod("Keyframe", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { new[] { vertices }, (uint)0 });
+    var keyframe1 = (byte[])methods.GetMethod("Keyframe", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { new[] { vertices }, (uint)1 });
+    var chunk = (byte[])methods.GetMethod("Chunk", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { new[] { keyframe, keyframe1 } });
+    var texture = new Texture2D(4, 4); var material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+    renderer.AddTexture("texture", texture); renderer.AddMaterial("material", material); renderer.AddMesh("mesh", mesh);
+    renderer.CreateVertexBuffer(); renderer.CreateVertexContainer(128, 4);
+    Check(renderer.IsGpuResident, "Reconnect fixture did not use GPU");
+    try
+    {
+      renderer.AddVertexData("0", chunk, 0); renderer.UpdateWithTime(0);
+      var rendererType = renderer.GetType();
+      var pipeline = rendererType.GetField("m_GpuPipeline", flags).GetValue(renderer);
+      var pool = rendererType.GetField("m_ChunkPool", flags).GetValue(renderer);
+      var layout = rendererType.GetField("m_VertexLayout", flags).GetValue(renderer);
+      renderer.ResetPlayback();
+      Check(renderer.EncodedFrameCount == 0 && renderer.BufferedFrameCount == 0 && double.IsNaN(renderer.PresentedTime), "Old playback state survived reconnect");
+      Check(ReferenceEquals(pipeline, rendererType.GetField("m_GpuPipeline", flags).GetValue(renderer)) &&
+        ReferenceEquals(pool, rendererType.GetField("m_ChunkPool", flags).GetValue(renderer)) &&
+        ReferenceEquals(layout, rendererType.GetField("m_VertexLayout", flags).GetValue(renderer)), "Reconnect reallocated buffers");
+      // Hold the worker gate to deterministically reconnect while an old
+      // import is in flight. Its continuation only returns the stale lease.
+      var gate = rendererType.GetField("m_ImportGate", flags).GetValue(renderer);
+      System.Threading.Tasks.Task<bool> stale = null;
+      System.Threading.Monitor.Enter(gate);
+      var context = System.Threading.SynchronizationContext.Current;
+      try
+      {
+        System.Threading.SynchronizationContext.SetSynchronizationContext(null);
+        stale = renderer.AddVertexDataAsync("1", chunk, 0);
+        renderer.ResetPlayback();
+      }
+      finally
+      {
+        System.Threading.SynchronizationContext.SetSynchronizationContext(context);
+        System.Threading.Monitor.Exit(gate);
+      }
+      Check(!stale.GetAwaiter().GetResult() && renderer.EncodedFrameCount == 0, "Stale worker committed into the new playback");
+      renderer.AddVertexData("0", chunk, 0);
+      Check(renderer.EncodedFrameCount == 2, "Chunk zero could not be imported after reconnect");
+      var info = new ChannelInfo { protocol_version = 5, textures = new List<string> { "same-id" },
+        initial_data = new List<InitialDataPart> { new InitialDataPart { file = "random.bin", sha256 = new string('a',64), size = 64 } } };
+      var fingerprintMethod = typeof(Receiver).GetMethod("ResourceFingerprint", flags);
+      string original = (string)fingerprintMethod.Invoke(receiver, new object[] { info });
+      Check(original == (string)fingerprintMethod.Invoke(receiver, new object[] { info }), "Stable manifest changed fingerprint");
+      info.initial_data[0].sha256 = new string('b',64);
+      Check(original != (string)fingerprintMethod.Invoke(receiver, new object[] { info }), "Same path ID hid changed texture bytes");
+      info.initial_data[0].sha256 = new string('a',64);
+      typeof(Receiver).GetField("m_TangentMode", flags).SetValue(receiver, StreamingMesh.Core.Rendering.ReceiverTangentMode.Recalculate);
+      Check(original != (string)fingerprintMethod.Invoke(receiver, new object[] { info }), "Changed vertex layout reused cache");
+      var root = new GameObject("cached-model"); root.transform.SetParent(gameObject.transform);
+      typeof(Receiver).GetField("m_MeshRenderer", flags).SetValue(receiver, renderer);
+      typeof(Receiver).GetField("m_StreamRoot", flags).SetValue(receiver, root);
+      typeof(Receiver).GetField("m_ActiveResourceFingerprint", flags).SetValue(receiver, original);
+      typeof(Receiver).GetMethod("ResetPlaybackData", flags).Invoke(receiver, new object[] { true });
+      Check(ReferenceEquals(renderer, typeof(Receiver).GetField("m_CachedMeshRenderer", flags).GetValue(receiver)) && !root.activeSelf && renderer.HasValidResources, "Receiver destroyed cached model");
+      Check(renderer.TextureDictionary["texture"] == texture && renderer.MaterialDictionary["material"] == material, "Cached Unity resources changed identity");
+      Debug.Log("STM_INDEX_RECONNECT PASS modelIdentity=true buffersReused=true chunkZero=true staleWorkerRejected=true manifestAndSettingsInvalidation=true");
+    }
+    finally
+    {
+      renderer.Dispose(); UnityEngine.Object.DestroyImmediate(gameObject);
+      UnityEngine.Object.DestroyImmediate(mesh); UnityEngine.Object.DestroyImmediate(material); UnityEngine.Object.DestroyImmediate(texture);
+    }
   }
 
   static void VerifyEncoders()

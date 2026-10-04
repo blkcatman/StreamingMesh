@@ -60,13 +60,16 @@ namespace StreamingMesh.Samples
 
         public void Connect()
         {
-            if (activeReceiver != null)
-            {
-                Destroy(activeReceiver.gameObject);
-                activeReceiver = null;
-            }
             try
             {
+                if (activeReceiver != null)
+                {
+                    activeReceiver.Reconnect(channelAddress.Trim(), autoPlayAfterBuffering);
+                    activeReceiver.MeshPresentationDelaySeconds = meshDelayMs / 1000.0;
+                    scrubbing = false;
+                    status = "Reconnecting / checking model resources.";
+                    return;
+                }
                 activeReceiver = Instantiate(receiverTemplate);
                 activeReceiver.name = "KAGURA Live Receiver";
                 activeReceiver.ConfigureChannel(channelAddress.Trim());
