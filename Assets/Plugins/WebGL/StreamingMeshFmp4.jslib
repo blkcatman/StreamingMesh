@@ -31,6 +31,10 @@ mergeInto(LibraryManager.library, {
       sourceBuffer: null,
       queue: [],
       seen: {},
+      pending: {},
+      generation: 0,
+      failed: false,
+      quotaBlocked: false,
       destroyed: false,
       fetching: false,
       playbackRequested: false,
@@ -40,15 +44,49 @@ mergeInto(LibraryManager.library, {
     };
 
     function pump() {
-      if (player.destroyed || !player.sourceBuffer || player.sourceBuffer.updating || !player.queue.length)
+      if (player.destroyed || player.failed || !player.sourceBuffer || player.sourceBuffer.updating)
         return;
-      var bytes = player.queue.shift();
-      try {
-        player.sourceBuffer.appendBuffer(bytes);
-      } catch (error) {
-        player.state = -1;
-        console.error("StreamingMesh fMP4 append failed", error);
+      // Keep a bounded playback window, including after seeking backwards.
+      var ranges = player.sourceBuffer.buffered;
+      var before = Math.max(0, audio.currentTime - (player.quotaBlocked ? 2 : 30));
+      var after = audio.currentTime + 90;
+      if (ranges.length && ranges.start(0) < before - 0.25) {
+        player.sourceBuffer.remove(0, before);
+        return;
       }
+      if (ranges.length && ranges.end(ranges.length - 1) > after + 0.25) {
+        player.sourceBuffer.remove(after, ranges.end(ranges.length - 1));
+        return;
+      }
+      if (!player.queue.length) return;
+      var item = player.queue[0];
+      try {
+        player.sourceBuffer.appendBuffer(item.bytes);
+        player.queue.shift();
+        if (item.file) {
+          delete player.pending[item.file];
+          player.seen[item.file] = true;
+        }
+        player.quotaBlocked = false;
+      } catch (error) {
+        if (error.name === "QuotaExceededError") {
+          // appendBuffer did not consume the data. Retry the same head once
+          // playback/eviction makes room; do not turn a full buffer into a fatal state.
+          if (!player.quotaBlocked) console.warn("StreamingMesh fMP4 waiting for buffer space: " + error.message);
+          player.quotaBlocked = true;
+          return;
+        }
+        player.failed = true;
+        player.state = -1;
+        console.error("StreamingMesh fMP4 append failed: " + error.name + ": " + error.message);
+      }
+    }
+
+    function contains(start, end) {
+      var ranges = player.sourceBuffer.buffered;
+      for (var range = 0; range < ranges.length; ++range)
+        if (ranges.start(range) <= start + 0.25 && ranges.end(range) >= end - 0.25) return true;
+      return false;
     }
 
     function requestPlayback() {
@@ -70,29 +108,47 @@ mergeInto(LibraryManager.library, {
     document.addEventListener("keydown", player.gestureHandler, true);
 
     async function fetchPlaylist() {
-      if (player.destroyed || player.fetching || !player.sourceBuffer)
+      if (player.destroyed || player.failed || player.fetching || !player.sourceBuffer || player.sourceBuffer.updating ||
+          player.quotaBlocked || player.queue.length >= 2)
         return;
       player.fetching = true;
+      var generation = player.generation;
       try {
         var response = await fetch(baseUrl + playlistFile, { cache: "no-store" });
         if (!response.ok)
           return;
         var text = await response.text();
+        if (player.destroyed || generation !== player.generation) return;
         var entries = text.split(/\r?\n/).filter(Boolean).map(function(line) {
           return JSON.parse(line);
         }).sort(function(a, b) {
           return a.sequence - b.sequence;
         });
+        // Preserve the full seekable timeline while downloading only a window.
+        // MediaSource otherwise exposes only the end of the appended prefix.
+        var duration = entries.length ? entries[entries.length - 1].endTicks / 10000000 : 0;
+        if (!player.sourceBuffer.updating && Number.isFinite(duration) && duration > 0 &&
+            (!Number.isFinite(mediaSource.duration) || duration > mediaSource.duration))
+          mediaSource.duration = duration;
 
         for (var i = 0; i < entries.length; ++i) {
           var entry = entries[i];
-          if (!entry.audio || player.seen[entry.audio])
+          var start = entry.startTicks / 10000000;
+          var end = entry.endTicks / 10000000;
+          if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start)
+            throw new Error("Invalid fMP4 segment timestamps");
+          var before = audio.currentTime;
+          if (!entry.audio || end <= before || player.pending[entry.audio])
             continue;
+          if (start > audio.currentTime + 60 || player.queue.length >= 2 || player.quotaBlocked) break;
+          if (player.seen[entry.audio] && contains(Math.max(start, before), end)) continue;
           var segmentResponse = await fetch(baseUrl + entry.audio, { cache: "no-store" });
           if (!segmentResponse.ok)
             break;
-          player.seen[entry.audio] = true;
-          player.queue.push(await segmentResponse.arrayBuffer());
+          var bytes = await segmentResponse.arrayBuffer();
+          if (player.destroyed || generation !== player.generation) return;
+          player.pending[entry.audio] = true;
+          player.queue.push({ bytes: bytes, file: entry.audio });
           pump();
         }
       } catch (error) {
@@ -110,6 +166,9 @@ mergeInto(LibraryManager.library, {
         player.sourceBuffer.mode = "segments";
         player.sourceBuffer.addEventListener("updateend", function() {
           pump();
+          // Removal is asynchronous too. Resume fetching once it finishes so
+          // periodic trimming cannot starve the forward playback window.
+          fetchPlaylist();
           if (audio.buffered.length > 0) {
             player.state = 1;
             requestPlayback();
@@ -129,10 +188,12 @@ mergeInto(LibraryManager.library, {
         }
         if (!initResponse)
           return;
-        player.queue.push(await initResponse.arrayBuffer());
+        var bytes = await initResponse.arrayBuffer();
+        if (player.destroyed) return;
+        player.queue.push({ bytes: bytes, file: null });
         pump();
         await fetchPlaylist();
-        player.timer = window.setInterval(fetchPlaylist, 500);
+        if (!player.destroyed) player.timer = window.setInterval(function() { pump(); fetchPlaylist(); }, 500);
       } catch (error) {
         player.state = -1;
         console.error("StreamingMesh fMP4 initialization failed", error);
@@ -165,6 +226,7 @@ mergeInto(LibraryManager.library, {
       player.playbackRequested = false;
       player.audio.pause();
       player.audio.currentTime = Math.max(0, time);
+      player.generation++;
     }
   },
 

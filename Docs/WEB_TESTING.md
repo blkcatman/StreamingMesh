@@ -313,3 +313,32 @@ python Tools/streamingmesh_dev_server.py --port 8005 --web-root Builds/MultiForm
 自動選択のURLは`http://127.0.0.1:8005/viewer/?channel=http%3A%2F%2F127.0.0.1%3A8005%2Fchannels%2Fchannel_KAGURA_MULTI%2F`。DXT5の確認には末尾へ`&texture_format=DXT5`を追加する。音声が自動再生待ちの場合は画面をクリックする。
 
 記録は`Logs/MultiFormatReceiver-verification.log`、`MultiFormatReceiver-capture-summary.json`、`MultiFormatReceiver-requests.json`、`MultiFormatReceiver-WebGPU-summary.json`、`MultiFormatReceiver-BC7-console.json`、`MultiFormatReceiver-BC7-reconnect-console.json`、`MultiFormatReceiver-BC7-metrics.json`、`MultiFormatReceiver-DXT5-console.json`、`MultiFormatReceiver-DXT5-metrics.json`。画面は`Logs/MultiFormatReceiver-BC7.png`と`Logs/MultiFormatReceiver-DXT5.png`。
+
+## Androidネイティブ優先・Web音声バッファの確認（2026-10-04）
+
+接続したPixel 5a／Android 14／Adreno 620で、先にARM64 IL2CPPのAPKを検証した。VulkanではASTC 4×4を自動選択し、音声287.613秒までの再生、Reconnectのキャッシュヒットと再生再開を確認。ASTC 6×6、ETC2 RGBA8も指定して実描画した。全ケースで13 Mesh／20 Texture、Mip1・CPU画素非保持。ネイティブのビルド手順とメモリ診断は`NATIVE_AUDIO_PLAYBACK.md`を参照。
+
+続いて同じ端末のChrome 154でWeb版を確認した。今回のグラフィックス経路はWebGPUであり、WebGL 2経路の検証とは区別する。ASTC 4×4を自動選択して20枚を直接GPUへロードし、GPU residentのメッシュ計算経路を使用した。
+
+旧版では停止中でも音声の29セグメントをすべて読み込み、`SourceBuffer`の範囲が約0～250秒になったところで残り4セグメントの`appendBuffer`が`QuotaExceededError`になった。これはMSE音声バッファの上限超過で、WASMのヒープ上限超過とは異なる。さらに旧コードはappend前にキューから取り出していたため、失敗したデータを失っていた。
+
+`StreamingMeshFmp4.jslib`は現在時刻の先60秒までを取得し、過去30秒より前と先90秒より後を解放する。境界のセグメント全体を取得するため、取得範囲は最大1セグメント分だけ先60秒を越える。キューは少数に制限し、append成功後にだけ消費済みとする。Quota発生時は同じバイト列を保持して再試行し、過去の保持を2秒へ縮める。後方シークは解放済みのセグメントを再取得し、古いシーク世代の非同期取得結果は破棄する。部分取得中も目録の全再生時間をMediaSource.durationへ反映し、離れた時刻へのシークを維持する。
+
+```powershell
+# 既存の独立検証プロジェクトを使い、GPU形式の再書き出しは省略する。
+./Tools/Tests/verify_indexed_resources.ps1 -EditorPath 'C:/Program Files/Unity/Hub/Editor/6000.5.10f1/Editor/Unity.exe' -VerificationProject '<独立プロジェクト>' -Output Builds/AndroidWebReceiver -BuildOnly
+python Tools/Tests/instrument_web_receiver.py Builds/AndroidWebReceiver/index.html --trace-growth
+python Tools/Tests/android_web_probe_server.py --port 8006 --web-root Builds/AndroidWebReceiver --data-root DevData/channels
+adb reverse tcp:8006 tcp:8006
+node Tools/Tests/test_web_audio_buffer.cjs
+```
+
+URLは`http://127.0.0.1:8006/viewer/?channel=http%3A%2F%2F127.0.0.1%3A8006%2Fchannels%2Fchannel_KAGURA_MULTI%2F`。USB reverse設定済み端末とホストPCの両方で開ける。音声の自動再生が保留された場合は画面をタップする。診断サーバーはlocalhostへだけbindし、コンソール・WASM診断を`Logs/AndroidWebReceiver-events.jsonl`に保存する。ビルド・目録・チャンクは共用するが、診断フックはこのサーバーが返すHTMLだけに追加する。
+
+容量制限付きのMSEモックで、停止中の取得範囲、失敗バイト列の再試行、前方／後方シーク、古い非同期取得と破棄後の結果拒否を検証した。PCの修正版WebGPU／BC7でも再生と前方／後方シークを確認した。Androidの結果・観測値は`Logs/AndroidWebReceiver-summary.json`、画面は`AndroidWebReceiver-fullplay.png`に保存する。WASM診断は2秒間隔であり、ブラウザ全体・GPUメモリ・瞬間ピークを意味しない。
+
+Androidの最終ビルドでは音声287.397737秒まで進み、旧版で失敗した250秒を越えて描画を継続した。20 TextureすべてASTC 4×4で、append例外・ページ例外・OOMは観測しなかった。音声バッファの保持時間最大は99.904秒、WASM容量最大445.313MiB／使用量最大381.643MiB。変更途中の別実行では533.875／450.447MiBも観測しており、今回の変更でWASM容量全体が一定・減少したとは判断しない。MSEのバッファ制限とWASMのプール／GCは別に評価する。
+
+残る現象として、Android Chromeは末尾の約0.26秒でreadyState=2の待機状態になり、`ended`通知を受け取らなかった。buffered末尾287.658666秒・目録の終了時刻まで取得済みだが、今回の確認を完全な終端通知の成功とは扱わない。現行プラグインはライブ追加を想定してMediaSourceを開いたままにするため、収録完了の明示とendOfStreamを含む終了処理は別途検証が必要。ネイティブ版の終端再生と区別する。
+
+終盤確認後、Android Webでも後方・前方シークとReconnectを実行した。解放済みの音声を再取得して再生でき、3回のリソースキャッシュヒットを観測。初期Textureのreadyログは20件のまま、ランダム名の初期binへのHTTP要求数も増えなかった。Reconnect後は0秒から再生を再開した。PCの最終ビルドはBC7で287.583269秒まで進み、音声バッファ上限例外はなかった。
