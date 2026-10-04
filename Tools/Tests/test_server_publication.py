@@ -31,20 +31,22 @@ class PublicationTest(unittest.TestCase):
             raw = b"x" * (64 * 1024 * 1024); data = gzip.compress(raw, compresslevel=1)
             filename = "c273f7e762074ee183b1264b6d854882.bin"
             part = {"file": filename, "size": len(raw), "compressedSize": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-            info = {"protocol_version": 5, "initial_data": [part]}
+            info = {"protocolVersion": 6, "initialData": [part]}
             try:
-                token = post("channel=channel_test", b'{"protocol_version":5,"initial_data":[]}')['push_token']
+                token = post("channel=channel_test", b'{"protocolVersion":6,"initialData":[]}')['push_token']
                 post("streaminfo=0", b'{"video":"000000.stmv"}', token)
                 with self.assertRaises(urllib.error.HTTPError):
                     post("initialinfo=stream.json", json.dumps(info).encode(), token)
-                self.assertEqual([], json.loads((root / "channel_test/stream.json").read_text())["initial_data"])
+                self.assertEqual([], json.loads((root / "channel_test/stream.json").read_text())["initialData"])
                 post("combined=" + filename, data, token)
                 post("initialinfo=stream.json", json.dumps(info).encode(), token)
                 self.assertEqual(info, json.loads((root / "channel_test/stream.json").read_text()))
+                with self.assertRaises(urllib.error.HTTPError):
+                    post("initialinfo=stream.json", b'{"protocol_version":5,"initial_data":[]}', token)
                 self.assertTrue((root / "channel_test/stream.stmj").exists())
                 extra = dict(part, file="29df64abc8a34aa4912f7cb87db2a049.bin")
-                info["texture_variants"] = [{"format": "BC7", "initial_data": [part]},
-                                            {"format": "ASTC_4x4", "initial_data": [extra]}]
+                info["textureVariants"] = [{"format": "BC7", "initialData": [part]},
+                                            {"format": "ASTC_4x4", "initialData": [extra]}]
                 with self.assertRaises(urllib.error.HTTPError):
                     post("initialinfo=stream.json", json.dumps(info).encode(), token)
                 post("combined=" + extra["file"], data, token)
@@ -63,7 +65,7 @@ class PublicationTest(unittest.TestCase):
                 part["file"] = "../stream0.bin"
                 with self.assertRaises(urllib.error.HTTPError):
                     post("initialinfo=stream.json", json.dumps(info).encode(), token)
-                self.assertEqual(filename, json.loads((root / "channel_test/stream.json").read_text())["initial_data"][0]["file"])
+                self.assertEqual(filename, json.loads((root / "channel_test/stream.json").read_text())["initialData"][0]["file"])
             finally:
                 server.shutdown(); server.server_close(); thread.join()
 

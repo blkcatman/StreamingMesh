@@ -7,14 +7,14 @@ var meshes=new System.Collections.Generic.List<Mesh>();
 int offset=info.textureSizes.Sum()+info.materialSizes.Sum();
 foreach(int size in info.meshSizes) {
  System.Collections.Generic.List<string> names;
- var mesh=StreamingMesh.Core.Serialization.MeshConverter.DeserializeFromBinary(metadata,offset,size,info.container_size,out names);
+ var mesh=StreamingMesh.Core.Serialization.MeshConverter.DeserializeFromBinary(metadata,offset,size,info.containerSize,out names);
  meshes.Add(mesh);offset+=size;
 }
 var uv=meshes.Select(m=>m.uv).ToArray();
 var triangles=meshes.Select(m=>m.triangles).ToArray();
 var layout=meshes.Select(m=>new float[m.vertexCount*3]).ToArray();
-var gpu=new StreamingMesh.Core.Rendering.GpuVertexPipeline(meshes,info.package_size,info.container_size,12,true);
-var cpu=new StreamingMesh.Core.VertexContainer(info.package_size,info.container_size,false);
+var gpu=new StreamingMesh.Core.Rendering.GpuVertexPipeline(meshes,info.packageSize,info.containerSize,12,true);
+var cpu=new StreamingMesh.Core.VertexContainer(info.packageSize,info.containerSize,false);
 var chunk=StreamingMesh.Lib.ExternalTools.Decompress(System.IO.File.ReadAllBytes(dir+"000000.stmv"));
 int count=BitConverter.ToInt32(chunk,0), pos=4*(count+1);
 var encoded=new System.Collections.Generic.List<byte[]>();

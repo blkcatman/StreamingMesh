@@ -15,6 +15,9 @@ namespace StreamingMesh.Samples
         int meshDelayMs;
         bool scrubbing;
         float scrubTime;
+        bool bufferSettingsOpen;
+        int vertexPrefetchChunks = 3;
+        float webAudioPrefetchSeconds = 60, webAudioBackSeconds = 30;
 
         void Update()
         {
@@ -27,6 +30,9 @@ namespace StreamingMesh.Samples
 
         void Start()
         {
+            vertexPrefetchChunks = receiverTemplate.VertexPrefetchChunks;
+            webAudioPrefetchSeconds = (float)receiverTemplate.WebAudioPrefetchSeconds;
+            webAudioBackSeconds = (float)receiverTemplate.WebAudioBackBufferSeconds;
             cameraControls = GetComponent<ReceiverCameraControls>() ?? gameObject.AddComponent<ReceiverCameraControls>();
 #if UNITY_IOS || UNITY_ANDROID
             Application.targetFrameRate = 60;
@@ -74,6 +80,7 @@ namespace StreamingMesh.Samples
                 activeReceiver.name = "KAGURA Live Receiver";
                 activeReceiver.ConfigureChannel(channelAddress.Trim());
                 activeReceiver.ConfigurePlayback(autoPlayAfterBuffering);
+                activeReceiver.ConfigureBuffering(vertexPrefetchChunks, webAudioPrefetchSeconds, webAudioBackSeconds);
                 activeReceiver.MeshPresentationDelaySeconds = meshDelayMs / 1000.0;
                 activeReceiver.gameObject.SetActive(true);
                 scrubbing = false;
@@ -98,6 +105,26 @@ namespace StreamingMesh.Samples
                 Mathf.Min(450, safe.width / scale - 24),
                 Mathf.Min(cameraControls != null && cameraControls.IsOpen ? 340 : 370, safe.height / scale - 24)), GUI.skin.box);
             GUILayout.Label("StreamingMesh KAGURA Receiver");
+            if (GUILayout.Button(bufferSettingsOpen ? "Close buffer settings" : "Buffer settings", GUILayout.Height(26)))
+                bufferSettingsOpen = !bufferSettingsOpen;
+            if (bufferSettingsOpen)
+            {
+                GUILayout.Label($"Vertex buffer: {vertexPrefetchChunks} files (including current)");
+                vertexPrefetchChunks = Mathf.RoundToInt(GUILayout.HorizontalSlider(vertexPrefetchChunks, 1, 16));
+                GUILayout.Label($"Web audio prefetch: {webAudioPrefetchSeconds:F1} s");
+                webAudioPrefetchSeconds = GUILayout.HorizontalSlider(webAudioPrefetchSeconds, 0.5f, 120);
+                GUILayout.Label($"Web audio history: {webAudioBackSeconds:F1} s");
+                webAudioBackSeconds = GUILayout.HorizontalSlider(webAudioBackSeconds, 0, 120);
+                GUILayout.Label("Whole chunks may extend past the selected window.");
+                GUILayout.Label("Native audio uses its player's buffer settings.");
+                if (GUILayout.Button("Apply / rebuffer", GUILayout.Height(32)))
+                {
+                    receiverTemplate.ConfigureBuffering(vertexPrefetchChunks, webAudioPrefetchSeconds, webAudioBackSeconds);
+                    if (activeReceiver != null) activeReceiver.ConfigureBuffering(vertexPrefetchChunks, webAudioPrefetchSeconds, webAudioBackSeconds);
+                    scrubbing = false;
+                }
+                GUILayout.EndArea(); GUI.matrix = previous; return;
+            }
             if (cameraControls != null)
             {
                 cameraControls.DrawToggle();

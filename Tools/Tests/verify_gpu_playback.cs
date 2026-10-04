@@ -3,14 +3,14 @@ var dir="DevData/channels/channel_KAGURA/";
 var report="Logs/iOSKagura/gpu-playback-verification.json";
 var info=JsonUtility.FromJson<StreamingMesh.Core.Serialization.ChannelInfo>(System.IO.File.ReadAllText(dir+"stream.json"));
 var bytes=StreamingMesh.Lib.ExternalTools.Decompress(System.IO.File.ReadAllBytes(dir+"stream.bin"));
-var renderer=new StreamingMesh.Core.Rendering.StreamingMeshRenderer {FrameInterval=1f/60,CombinedFrames=info.combined_frames,NormalMode=StreamingMesh.Core.Rendering.ReceiverNormalMode.None};
+var renderer=new StreamingMesh.Core.Rendering.StreamingMeshRenderer {FrameInterval=1f/60,CombinedFrames=info.combinedFrames,NormalMode=StreamingMesh.Core.Rendering.ReceiverNormalMode.None};
 int offset=info.textureSizes.Sum()+info.materialSizes.Sum();
 foreach(int size in info.meshSizes) {
  System.Collections.Generic.List<string> names;
- var mesh=StreamingMesh.Core.Serialization.MeshConverter.DeserializeFromBinary(bytes,offset,size,info.container_size,out names);
+ var mesh=StreamingMesh.Core.Serialization.MeshConverter.DeserializeFromBinary(bytes,offset,size,info.containerSize,out names);
  renderer.AddMesh(mesh.name,mesh);offset+=size;
 }
-renderer.CreateVertexBuffer();renderer.CreateVertexContainer(info.package_size,info.container_size);
+renderer.CreateVertexBuffer();renderer.CreateVertexContainer(info.packageSize,info.containerSize);
 if(!renderer.IsGpuResident) throw new Exception("GPU pipeline unavailable");
 var chunk=StreamingMesh.Lib.ExternalTools.Decompress(System.IO.File.ReadAllBytes(dir+"000000.stmv"));
 int count=BitConverter.ToInt32(chunk,0), pos=4*(count+1);

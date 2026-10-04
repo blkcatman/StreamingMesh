@@ -10,7 +10,7 @@ namespace StreamingMesh.Core.Serialization
     public string format;
     public List<int> textureSizes;
     public List<TexturePayloadInfo> texturePayloads;
-    public List<InitialDataPart> initial_data;
+    public List<InitialDataPart> initialData;
   }
 
   public static class TextureVariants
@@ -20,7 +20,7 @@ namespace StreamingMesh.Core.Serialization
     public static string Select(ChannelInfo info, string preferred = null,
       Func<TexturePayloadInfo, bool> supported = null)
     {
-      var variants = info.texture_variants;
+      var variants = info.textureVariants;
       if (variants == null || variants.Count == 0)
       {
         if (!string.IsNullOrEmpty(preferred) && info.texturePayloads != null)
@@ -46,16 +46,16 @@ namespace StreamingMesh.Core.Serialization
             throw new InvalidDataException("Invalid texture variant payload.");
           usable &= supported != null ? supported(payload) : payload.IsSupported();
         }
-        InitialDataParts.Validate(variant.initial_data, info.materialSizes, info.meshSizes, variant.textureSizes);
+        InitialDataParts.Validate(variant.initialData, info.materialSizes, info.meshSizes, variant.textureSizes);
         if (usable && selected == null) selected = variant;
       }
       if (selected == null) throw new NotSupportedException("No GPU texture variant supported by this Receiver" +
         (string.IsNullOrEmpty(preferred) ? "." : ": " + preferred));
       info.textureSizes = selected.textureSizes;
       info.texturePayloads = selected.texturePayloads;
-      info.initial_data = selected.initial_data;
+      info.initialData = selected.initialData;
       // Keep only the selected model in the runtime snapshot and cache key.
-      info.texture_variants = null;
+      info.textureVariants = null;
       return selected.format;
     }
   }

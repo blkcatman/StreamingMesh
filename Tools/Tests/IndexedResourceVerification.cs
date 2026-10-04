@@ -39,7 +39,11 @@ public static class IndexedResourceVerification
       string channel = Path.GetFullPath(Argument("-indexedChannel"));
       string fixture = Path.GetFullPath(Argument("-indexedFixture"));
       Directory.CreateDirectory(output); Directory.CreateDirectory(channel);
-      var oldInfo = JsonUtility.FromJson<ChannelInfo>(File.ReadAllText(Path.Combine(fixture, "stream.json")));
+      string archivedJson = File.ReadAllText(Path.Combine(fixture, "stream.json"));
+      var oldInfo = JsonUtility.FromJson<ChannelInfo>(archivedJson);
+      var archived = JsonUtility.FromJson<ArchivedHeader>(archivedJson);
+      oldInfo.containerSize = archived.container_size; oldInfo.packageSize = archived.package_size;
+      oldInfo.frameInterval = archived.frame_interval; oldInfo.combinedFrames = archived.combined_frames;
       var source = UnityEngine.Object.Instantiate(AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Samples/UnityChanKAGURA/Prefabs/UnityChanKAGURA.prefab"));
       var serializerObject = new GameObject("verification-sender");
       var serializer = serializerObject.AddComponent<STMHttpSerializer>();
@@ -70,7 +74,7 @@ public static class IndexedResourceVerification
       recorded = null;
       Check(materials.Count == oldInfo.materials.Count && oldInfo.materials.All(materials.ContainsKey), "Material IDs changed");
       Check(textures.Count == oldInfo.textures.Count && oldInfo.textures.All(textures.ContainsKey), "Texture IDs changed");
-      var channelInfo = serializer.CreateChannelInfo(oldInfo.container_size, oldInfo.package_size, oldInfo.frame_interval, oldInfo.combined_frames,
+      var channelInfo = serializer.CreateChannelInfo(oldInfo.containerSize, oldInfo.packageSize, oldInfo.frameInterval, oldInfo.combinedFrames,
         oldInfo.meshes, oldInfo.materials, oldInfo.textures, new List<int>(), new List<int>(), new List<int>(), oldInfo.textureNames);
       InitialResourceExporter.ExportVariants(channelInfo, oldInfo.materials.Select(id => materials[id]).ToList(), meshInfos,
         oldInfo.textures.Select(id => textures[id]).ToList(), new[] { GpuTextureFormat.BC7, GpuTextureFormat.ASTC_4x4,
@@ -78,18 +82,19 @@ public static class IndexedResourceVerification
         (part, bytes) => File.WriteAllBytes(Path.Combine(channel, part.file), bytes));
       foreach (var file in Directory.GetFiles(fixture))
         if (!new[] { "stream.bin", "stream.json" }.Contains(Path.GetFileName(file))) File.Copy(file, Path.Combine(channel, Path.GetFileName(file)), true);
+      File.WriteAllLines(Path.Combine(channel, "stream.stma"), File.ReadAllLines(Path.Combine(fixture, "stream.stma")).Where(line => !string.IsNullOrWhiteSpace(line)).Select(line => JsonUtility.ToJson(JsonUtility.FromJson<AudioInfo>(line))));
       File.WriteAllText(Path.Combine(channel, "stream.json"), JsonUtility.ToJson(channelInfo));
       long bytesTotal = channelInfo.textureSizes.Sum(size => (long)size);
-      long compressedTotal = channelInfo.initial_data.Sum(part => (long)part.compressedSize);
-      Debug.Log($"STM_INDEX_EXPORT parts={channelInfo.initial_data.Count} textures={textures.Count} rawTextureBytes={bytesTotal} compressedTotalBytes={compressedTotal}");
-      foreach (var variant in channelInfo.texture_variants)
+      long compressedTotal = channelInfo.initialData.Sum(part => (long)part.compressedSize);
+      Debug.Log($"STM_INDEX_EXPORT parts={channelInfo.initialData.Count} textures={textures.Count} rawTextureBytes={bytesTotal} compressedTotalBytes={compressedTotal}");
+      foreach (var variant in channelInfo.textureVariants)
       {
-        Check(variant.initial_data.SelectMany(part => part.records).All(record => record.resourceOffset == 0), "A resource was split between files");
+        Check(variant.initialData.SelectMany(part => part.records).All(record => record.resourceOffset == 0), "A resource was split between files");
         var copy = JsonUtility.FromJson<ChannelInfo>(JsonUtility.ToJson(channelInfo));
         string selected = TextureVariants.Select(copy, supported: payload => payload.format == variant.format);
-        Check(selected == variant.format && copy.texturePayloads.All(payload => payload.format == selected) && copy.texture_variants == null,
+        Check(selected == variant.format && copy.texturePayloads.All(payload => payload.format == selected) && copy.textureVariants == null,
           "Platform selection did not isolate the selected variant");
-        Debug.Log($"STM_INDEX_VARIANT format={selected} parts={copy.initial_data.Count} bytes={copy.textureSizes.Sum(size => (long)size)} compressed={copy.initial_data.Sum(part => (long)part.compressedSize)} atomic=true selection=true");
+        Debug.Log($"STM_INDEX_VARIANT format={selected} parts={copy.initialData.Count} bytes={copy.textureSizes.Sum(size => (long)size)} compressed={copy.initialData.Sum(part => (long)part.compressedSize)} atomic=true selection=true");
       }
       bool unsupportedRejected = false;
       try { TextureVariants.Select(JsonUtility.FromJson<ChannelInfo>(JsonUtility.ToJson(channelInfo)), supported: payload => false); }
@@ -139,7 +144,7 @@ public static class IndexedResourceVerification
       using (var loader = new InitialResourceLoader(info, material => Shader.Find(material.shaderName), (id, texture) => textures.Add(id, texture)))
       {
         var scratch = new byte[64 * 1024];
-        foreach (var part in info.initial_data)
+        foreach (var part in info.initialData)
           using (var input = File.OpenRead(Path.Combine(channel, part.file))) InitialDataParts.Read(part, input, scratch, loader.Consume);
         Check(textures.Count == 20 && textures.Values.All(texture => texture.format == TextureFormat.BC7 && !texture.isReadable), "Native compressed textures changed format or retained CPU memory");
         Check(loader.Materials.All(material => material != null) && loader.Meshes.All(mesh => mesh != null), "Native metadata incomplete");
@@ -149,6 +154,8 @@ public static class IndexedResourceVerification
     }
     finally { foreach (var texture in textures.Values) UnityEngine.Object.DestroyImmediate(texture); }
   }
+
+  [Serializable] class ArchivedHeader { public int container_size, package_size, combined_frames; public float frame_interval; }
 
   static void VerifyReconnect()
   {
@@ -199,14 +206,31 @@ public static class IndexedResourceVerification
       Check(!stale.GetAwaiter().GetResult() && renderer.EncodedFrameCount == 0, "Stale worker committed into the new playback");
       renderer.AddVertexData("0", chunk, 0);
       Check(renderer.EncodedFrameCount == 2, "Chunk zero could not be imported after reconnect");
-      var info = new ChannelInfo { protocol_version = 5, textures = new List<string> { "same-id" },
-        initial_data = new List<InitialDataPart> { new InitialDataPart { file = "random.bin", sha256 = new string('a',64), size = 64 } } };
+      renderer.ConfigureVertexPrefetch(3);
+      Check(renderer.EncodedFrameCount == 2 && ReferenceEquals(pool, rendererType.GetField("m_ChunkPool", flags).GetValue(renderer)),
+        "Reapplying the same file window changed playback or reallocated chunk bytes");
+      renderer.ConfigureVertexPrefetch(1);
+      Check(renderer.EncodedFrameCount == 0 && ReferenceEquals(pool, rendererType.GetField("m_ChunkPool", flags).GetValue(renderer)) && ReferenceEquals(pipeline, rendererType.GetField("m_GpuPipeline", flags).GetValue(renderer)) &&
+        renderer.TextureDictionary["texture"] == texture && renderer.MaterialDictionary["material"] == material,
+        "Changing prefetch rebuilt model/GPU resources");
+      renderer.AddVertexData("0", chunk, 0);
+      Check(renderer.EncodedFrameCount == 2, "Short-window rebuffer failed");
+      var info = new ChannelInfo { protocolVersion = ChannelInfo.CurrentVersion, textures = new List<string> { "same-id" },
+        initialData = new List<InitialDataPart> { new InitialDataPart { file = "random.bin", sha256 = new string('a',64), size = 64 } } };
+      string manifestJson = JsonUtility.ToJson(info);
+      Check(manifestJson.Contains("\"protocolVersion\":6") && !manifestJson.Contains("protocol_version"), "Manifest casing/version mismatch");
+      var senderSerializer = gameObject.AddComponent<STMHttpSerializer>();
+      var audioMetadata = senderSerializer.CreateAudioInfo("audio-000000.m4s", 48000, 48000);
+      string audioJson = JsonUtility.ToJson(audioMetadata);
+      Check(!audioJson.Contains("sequence") && JsonUtility.FromJson<AudioInfo>(audioJson).endTicks == 20000000, "Audio metadata serialization mismatch");
       var fingerprintMethod = typeof(Receiver).GetMethod("ResourceFingerprint", flags);
       string original = (string)fingerprintMethod.Invoke(receiver, new object[] { info });
       Check(original == (string)fingerprintMethod.Invoke(receiver, new object[] { info }), "Stable manifest changed fingerprint");
-      info.initial_data[0].sha256 = new string('b',64);
+      receiver.ConfigureBuffering(2, 5, 2);
+      Check(original == (string)fingerprintMethod.Invoke(receiver, new object[] { info }), "Buffer settings invalidated model identity");
+      info.initialData[0].sha256 = new string('b',64);
       Check(original != (string)fingerprintMethod.Invoke(receiver, new object[] { info }), "Same path ID hid changed texture bytes");
-      info.initial_data[0].sha256 = new string('a',64);
+      info.initialData[0].sha256 = new string('a',64);
       typeof(Receiver).GetField("m_TangentMode", flags).SetValue(receiver, StreamingMesh.Core.Rendering.ReceiverTangentMode.Recalculate);
       Check(original != (string)fingerprintMethod.Invoke(receiver, new object[] { info }), "Changed vertex layout reused cache");
       var root = new GameObject("cached-model"); root.transform.SetParent(gameObject.transform);
@@ -216,7 +240,7 @@ public static class IndexedResourceVerification
       typeof(Receiver).GetMethod("ResetPlaybackData", flags).Invoke(receiver, new object[] { true });
       Check(ReferenceEquals(renderer, typeof(Receiver).GetField("m_CachedMeshRenderer", flags).GetValue(receiver)) && !root.activeSelf && renderer.HasValidResources, "Receiver destroyed cached model");
       Check(renderer.TextureDictionary["texture"] == texture && renderer.MaterialDictionary["material"] == material, "Cached Unity resources changed identity");
-      Debug.Log("STM_INDEX_RECONNECT PASS modelIdentity=true buffersReused=true chunkZero=true staleWorkerRejected=true manifestAndSettingsInvalidation=true");
+      Debug.Log("STM_INDEX_RECONNECT PASS modelIdentity=true buffersReused=true chunkZero=true staleWorkerRejected=true manifestAndSettingsInvalidation=true adjustablePrefetch=true");
     }
     finally
     {

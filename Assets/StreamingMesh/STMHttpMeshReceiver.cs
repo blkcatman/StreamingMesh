@@ -464,24 +464,24 @@ namespace StreamingMesh
     void OnChannelInfoReceived(string name, ChannelInfo info)
     {
       // Protocol v5 uses indexed resource parts instead of the legacy stream.bin.
-      if (info.protocol_version >= 5)
+      if (info.protocolVersion >= 5)
       {
         Debug.LogError("STMHttpMeshReceiver does not support this channel format. Use StreamingMesh.Receiver for protocol v5 or later.");
         return;
       }
 
-      m_containerSize = info.container_size;
-      //m_packageSize = info.package_size;
-      m_frameInterval = info.frame_interval;
-      m_combinedFrames = info.combined_frames;
-      m_streamInfoURL = info.stream_info;
+      m_containerSize = info.containerSize;
+      //m_packageSize = info.packageSize;
+      m_frameInterval = info.frameInterval;
+      m_combinedFrames = info.combinedFrames;
+      m_streamInfoURL = info.streamInfo;
 
-      vPack = new VertexContainer(info.package_size, info.container_size);
+      vPack = new VertexContainer(info.packageSize, info.containerSize);
 
 #if UNITY_WEBGL
-      m_audioURL = info.audio_clip;
+      m_audioURL = info.audioClip;
 #else
-      m_audioInfoURL = info.audio_info;
+      m_audioInfoURL = info.audioInfo;
 #endif
       vertsBuf = new float[info.meshes.Count][];
       vertsBuf_old = new float[info.meshes.Count][];

@@ -35,6 +35,9 @@ mergeInto(LibraryManager.library, {
       generation: 0,
       failed: false,
       quotaBlocked: false,
+      aheadSeconds: 60,
+      backSeconds: 30,
+      maximumSegmentSeconds: 0,
       destroyed: false,
       fetching: false,
       playbackRequested: false,
@@ -48,8 +51,8 @@ mergeInto(LibraryManager.library, {
         return;
       // Keep a bounded playback window, including after seeking backwards.
       var ranges = player.sourceBuffer.buffered;
-      var before = Math.max(0, audio.currentTime - (player.quotaBlocked ? 2 : 30));
-      var after = audio.currentTime + 90;
+      var before = Math.max(0, audio.currentTime - (player.quotaBlocked ? Math.min(2, player.backSeconds) : player.backSeconds));
+      var after = audio.currentTime + player.aheadSeconds + player.maximumSegmentSeconds;
       if (ranges.length && ranges.start(0) < before - 0.25) {
         player.sourceBuffer.remove(0, before);
         return;
@@ -122,8 +125,14 @@ mergeInto(LibraryManager.library, {
         var entries = text.split(/\r?\n/).filter(Boolean).map(function(line) {
           return JSON.parse(line);
         }).sort(function(a, b) {
-          return a.sequence - b.sequence;
+          return a.startTicks - b.startTicks;
         });
+        player.maximumSegmentSeconds = entries.reduce(function(maximum, entry) {
+          var start = entry.startTicks / 10000000, end = entry.endTicks / 10000000;
+          if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start)
+            throw new Error("Invalid fMP4 segment timestamps");
+          return Math.max(maximum, end - start);
+        }, 0);
         // Preserve the full seekable timeline while downloading only a window.
         // MediaSource otherwise exposes only the end of the appended prefix.
         var duration = entries.length ? entries[entries.length - 1].endTicks / 10000000 : 0;
@@ -140,7 +149,7 @@ mergeInto(LibraryManager.library, {
           var before = audio.currentTime;
           if (!entry.audio || end <= before || player.pending[entry.audio])
             continue;
-          if (start > audio.currentTime + 60 || player.queue.length >= 2 || player.quotaBlocked) break;
+          if (start > audio.currentTime + player.aheadSeconds || player.queue.length >= 2 || player.quotaBlocked) break;
           if (player.seen[entry.audio] && contains(Math.max(start, before), end)) continue;
           var segmentResponse = await fetch(baseUrl + entry.audio, { cache: "no-store" });
           if (!segmentResponse.ok)
@@ -148,7 +157,7 @@ mergeInto(LibraryManager.library, {
           var bytes = await segmentResponse.arrayBuffer();
           if (player.destroyed || generation !== player.generation) return;
           player.pending[entry.audio] = true;
-          player.queue.push({ bytes: bytes, file: entry.audio });
+          player.queue.push({ bytes: bytes, file: entry.audio, start: start });
           pump();
         }
       } catch (error) {
@@ -200,6 +209,21 @@ mergeInto(LibraryManager.library, {
       }
     }, { once: true });
 
+    player.configureBuffering = function(ahead, back) {
+      if (!Number.isFinite(ahead) || ahead < 0.5 || ahead > 120 ||
+          !Number.isFinite(back) || back < 0 || back > 120) return;
+      if (player.aheadSeconds === ahead && player.backSeconds === back) return;
+      player.aheadSeconds = ahead; player.backSeconds = back;
+      player.generation++; // Discard a fetch started with the previous window.
+      player.queue = player.queue.filter(function(item) {
+        if (!item.file || item.start <= audio.currentTime + ahead) return true;
+        delete player.pending[item.file]; return false;
+      });
+      // A retained blocked head gets another attempt after old ranges are removed.
+      if (!player.queue.length) player.quotaBlocked = false;
+      pump(); fetchPlaylist();
+    };
+
     audio.addEventListener("playing", function() { player.state = 2; });
     audio.addEventListener("waiting", function() { player.state = 1; });
     audio.addEventListener("ended", function() { player.state = 3; });
@@ -211,6 +235,12 @@ mergeInto(LibraryManager.library, {
     var root = Module.StreamingMeshFmp4;
     var player = root && root.players[handle];
     return player && player.state >= 1 && !player.audio.seeking ? player.audio.currentTime : -1.0;
+  },
+
+  STM_Fmp4_ConfigureBuffering: function(handle, aheadSeconds, backSeconds) {
+    var root = Module.StreamingMeshFmp4;
+    var player = root && root.players[handle];
+    if (player && !player.destroyed) player.configureBuffering(aheadSeconds, backSeconds);
   },
 
   STM_Fmp4_GetState: function(handle) {

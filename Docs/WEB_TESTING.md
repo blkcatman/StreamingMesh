@@ -97,8 +97,8 @@ navigator.gpu !== undefined
 
 | 項目 | 制限 |
 | --- | --- |
-| 受信待ちフレーム | `max(16, Combined Frames * 2)` で取り込みを止める。1チャンク分の追加を含むリング容量はこの値に `Combined Frames` を足す |
-| チャンクバッファ数 | `ceil(取り込み閾値 / Combined Frames) + 2`。300フレームのチャンクなら4スロット |
+| 受信待ちフレーム | リング容量は`min(8192, VertexPrefetchChunks * CombinedFrames)`。完全な1ファイル分の空きがなければ取得を待つ |
+| チャンクバッファ数 | `VertexPrefetchChunks`（標準3、1〜16）。8192フレームの上限で実効数を制限する。大きな配列は遅延確保し、変更時も引き継ぐ |
 | チャンクの展開サイズ | 1チャンク128MiB、再利用バッファの合計256MiBまで。チャンク内のフレーム数は設定値以下、設定値は最大4096 |
 | 復元済みスナップショット | 既存の復元先読み時間とGPUプール容量で制限。管理オブジェクトとCPU頂点配列も再利用する |
 
@@ -342,3 +342,41 @@ Androidの最終ビルドでは音声287.397737秒まで進み、旧版で失敗
 残る現象として、Android Chromeは末尾の約0.26秒でreadyState=2の待機状態になり、`ended`通知を受け取らなかった。buffered末尾287.658666秒・目録の終了時刻まで取得済みだが、今回の確認を完全な終端通知の成功とは扱わない。現行プラグインはライブ追加を想定してMediaSourceを開いたままにするため、収録完了の明示とendOfStreamを含む終了処理は別途検証が必要。ネイティブ版の終端再生と区別する。
 
 終盤確認後、Android Webでも後方・前方シークとReconnectを実行した。解放済みの音声を再取得して再生でき、3回のリソースキャッシュヒットを観測。初期Textureのreadyログは20件のまま、ランダム名の初期binへのHTTP要求数も増えなかった。Reconnect後は0秒から再生を再開した。PCの最終ビルドはBC7で287.583269秒まで進み、音声バッファ上限例外はなかった。
+
+
+## v6・ファイル単位の先読みと追記再生（2026-10-04）
+
+`stream.json`をlowerCamelCaseに統一し、`stream.stma.sequence`を削除した。現在のSender／Receiver／開発サーバーはv6を使用し、旧名・旧チャンネルの互換読み込みは行わない。[STREAM_FORMAT.md](STREAM_FORMAT.md)に全プロパティの対応と公開順序を記載した。頂点フレームのsequenceとHLS内部のsequenceは維持する。
+
+Receiverの頂点保持数は標準3ファイル（現在消費中を含む）、1〜16で可変。Web音声の未来60秒／過去30秒も可変。KAGURAの`Buffer settings`→`Apply / rebuffer`、または`ConfigureBuffering(vertexChunks, webAudioSeconds, webAudioBackSeconds)`で変更する。頂点ファイルは分割せず、消費済みの展開配列を再利用する。設定縮小では余剰配列だけを解放し、スレッドが保持中の配列は返却を待つ。指定ファイル数のほかに8192フレーム・配列合計256MiBの上限を適用する。
+
+検証用`channel_KAGURA_MULTI_V6`は既存Sender収録のGPU圧縮・頂点・AACデータを再使用し、目録の名前／バージョンと音声JSONだけをv6へ再構成した。新しい動画や音声を収録したものではない。9 Material／20 Texture／13 Mesh、29チャンク・8628フレームを検証した。
+
+- 停止中のWebで標準3ファイルは`000000`〜`000002.stmv`だけを取得した。2ファイルへ変更すると取得は2個で止まり、モデルのキャッシュヒットを確認した。
+- Pixel 5aのネイティブ版でASTC 4×4を選択し、3ファイル設定の再生は287.588秒まで進んだ。配列再利用の改修後にも3→2ファイルの変更を実機で確認し、13 Mesh／20 Textureを維持した。
+- KAGURAの配列プールは3ファイルで68,222,976 byte（65.063MiB）、2ファイルで45,481,984 byte（43.375MiB）。フレームメタデータは900→600件となる。これはプールの値であり、WASM全体・GPU・ブラウザのメモリ総量ではない。標準を3ファイルにすることで、直前の暫定5秒設定より配列保持量は増える。
+- 最終Web版の3→2ファイル変更では配列を引き継ぎ、WASM容量は326,303,744 byteのままで追加拡張しなかった。使用量は243,720,584→244,002,264 byteであり、プール縮小がWASM使用量全体の即時減少を意味するわけではない。`Logs/WindowReceiver-summary.json`に記録した。
+- 既存録画をHTTPアップロードAPIで2→4→6チャンクと段階公開した。Web ReceiverはReconnectせず、約20秒の当初の公開範囲を越えて約40秒、約60秒まで音声と頂点を再生した。収録中のSender実行を直接検証したものとは区別する。
+- C#リング／プールの180,573チェック（リング操作の確保0 byte）、初期データの182チェック、Unityでモデル／GPU／プールの再利用・旧スレッド結果の拒否・Sender音声JSONの生成、MSEモックでsequenceなしのPTS順・追記・可変範囲・Quota再試行・シーク、HTTP公開の原子性と旧目録の拒否を確認した。
+
+検証は6000.5.10f1／URP 17.5の独立プロジェクトで行い、元の6000.6.3f1／URP 17.6の設定を変更していない。検証用Webビルドは4GiBの最大WASM容量・32MiBの初期容量。前節の音声終端の`ended`未通知は別の課題として残る。
+
+```powershell
+Tools/Tests/verify_android_receiver.ps1 -EditorPath '<Unity.exe>' -VerificationProject '<独立プロジェクト>' -Output Builds/AndroidWindowReceiver.apk
+Tools/Tests/verify_indexed_resources.ps1 -EditorPath '<Unity.exe>' -VerificationProject '<独立プロジェクト>' -Output Builds/WindowReceiver -BuildOnly
+python Tools/Tests/instrument_web_receiver.py Builds/WindowReceiver/index.html
+python Tools/Tests/android_web_probe_server.py --port 8006 --web-root Builds/WindowReceiver --data-root DevData/channels --log Logs/WindowReceiver-events.jsonl
+adb reverse tcp:8006 tcp:8006
+```
+
+URLは`http://127.0.0.1:8006/viewer/?channel=http%3A%2F%2F127.0.0.1%3A8006%2Fchannels%2Fchannel_KAGURA_MULTI_V6%2F`。音声が自動再生待ちの場合はPause→Playをクリックする。再生範囲の比較は停止中に設定を適用してHTTP要求と`STM_MEM`の`vertexPrefetchChunks`／`chunkSlots`／`chunkCapacity`／`encodedCapacity`を確認する。
+
+追記確認は次の手順で、未使用の検証チャンネルを作成する。同じ名前の既存チャンネルは上書きしない。2ファイルの公開後、`channel_KAGURA_LIVE_V6`へ接続し、再生中または公開済みの末尾で追加を実行する。
+
+```powershell
+python Tools/Tests/publish_live_fixture.py --prepare --through 2
+python Tools/Tests/publish_live_fixture.py --through 4
+python Tools/Tests/publish_live_fixture.py --through 6
+```
+
+記録は`Logs/WindowReceiver-events.jsonl`／`WindowReceiver-access.log`、`WindowReceiver-live.png`、`AndroidWindowReceiver-v6-fullplay-logcat.txt`／`AndroidWindowReceiver-resize-logcat.txt`、`AndroidWindowReceiver-two-files.png`。再公開用トークンはローカルの`Logs/channel_KAGURA_LIVE_V6-publisher.json`へ保存し、配信ディレクトリへ置かない。

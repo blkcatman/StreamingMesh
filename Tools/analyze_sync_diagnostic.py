@@ -15,8 +15,8 @@ from pathlib import Path
 
 def mesh_samples(channel: Path) -> list[tuple[float, float, float]]:
     metadata = json.loads((channel / "stream.json").read_text())
-    half_package = metadata["package_size"] // 2
-    tile_scale = metadata["container_size"] / half_package
+    half_package = metadata["packageSize"] // 2
+    tile_scale = metadata["containerSize"] / half_package
     sub_tile_scale = tile_scale / 32
     samples = []
     tip = None
@@ -66,7 +66,7 @@ def mesh_samples(channel: Path) -> list[tuple[float, float, float]]:
             else:
                 raise ValueError(f"{chunk}: invalid frame or missing stopwatch hand")
 
-            timestamp = struct.unpack_from("<q", frame, 21)[0] / metadata["timebase_hz"]
+            timestamp = struct.unpack_from("<q", frame, 21)[0] / metadata["timebaseHz"]
             if samples and timestamp <= samples[-1][0]:
                 raise ValueError(f"{chunk}: presentation timestamps must increase")
             samples.append((timestamp, *tip))
@@ -150,7 +150,7 @@ def main() -> None:
     if any(abs(offset) >= 0.5 for offset in offsets):
         raise SystemExit("Crossings do not match their one-second beep sequence")
     angles = [hand_angle_at_time(samples, beep) for beep in compared_audio]
-    interval = json.loads((args.channel / "stream.json").read_text())["frame_interval"]
+    interval = json.loads((args.channel / "stream.json").read_text())["frameInterval"]
     print(f"mesh crossings={len(visual)}, audio beeps={len(audio)}, compared={len(offsets)} "
           "(first parked beep excluded)")
     print("visual minus audio (ms): " +

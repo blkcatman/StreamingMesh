@@ -14,10 +14,10 @@ namespace StreamingMesh.Core.Rendering
     {
 #if UNITY_ANDROID && !UNITY_EDITOR
       Dispose();
-      if (channelInfo == null || string.IsNullOrEmpty(channelInfo.audio_playlist))
+      if (channelInfo == null || string.IsNullOrEmpty(channelInfo.audioPlaylist))
         return false;
 
-      string playlistUrl = channelUrl.TrimEnd('/') + "/" + channelInfo.audio_playlist;
+      string playlistUrl = channelUrl.TrimEnd('/') + "/" + channelInfo.audioPlaylist;
       try
       {
         using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))

@@ -20,7 +20,7 @@ public static class AndroidReceiverVerification
       string output = Path.GetFullPath(args[Array.IndexOf(args, "-androidOutput") + 1]);
       var scene = EditorSceneManager.OpenScene("Assets/Samples/UnityChanKAGURA/Scenes/KaguraReceiver.unity");
       var controls = UnityEngine.Object.FindFirstObjectByType<KaguraReceiverControls>();
-      controls.channelAddress = "http://127.0.0.1:8005/channels/channel_KAGURA_MULTI/";
+      controls.channelAddress = "http://127.0.0.1:8005/channels/channel_KAGURA_MULTI_V6/";
       controls.connectOnStart = true;
       controls.autoPlayAfterBuffering = true;
       if (controls.GetComponent<AndroidReceiverProbe>() == null) controls.gameObject.AddComponent<AndroidReceiverProbe>();

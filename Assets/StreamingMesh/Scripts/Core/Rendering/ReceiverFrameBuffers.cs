@@ -73,11 +73,13 @@ namespace StreamingMesh.Core.Rendering
       public readonly EncodedFrameSlice[] frames;
       public int count, retained, index;
       internal bool leased;
+      internal bool retired;
       internal int payloadBytes;
       internal Chunk(int framesPerChunk) { frames = new EncodedFrameSlice[framesPerChunk]; }
     }
     readonly object gate = new object();
-    readonly Chunk[] chunks;
+    Chunk[] chunks;
+    readonly int framesPerChunk;
     readonly int maxChunkBytes, maxFrameBytes;
     readonly long budget;
     long allocated, leasedPayload, peakLeasedPayload;
@@ -90,7 +92,7 @@ namespace StreamingMesh.Core.Rendering
     public long AllocatedBytes { get { lock (gate) return allocated; } }
     public bool HasFreeChunk
     {
-      get { lock (gate) { if (disposed) return false; foreach (var chunk in chunks) if (!chunk.leased) return true; return false; } }
+      get { lock (gate) { if (disposed || leasedSlots >= chunks.Length) return false; foreach (var chunk in chunks) if (!chunk.leased) return true; return false; } }
     }
     public EncodedChunkPool(int slots, int framesPerChunk, int maximumFrameBytes,
       int maximumChunkBytes = 128 * 1024 * 1024, long byteBudget = 256L * 1024 * 1024)
@@ -98,14 +100,39 @@ namespace StreamingMesh.Core.Rendering
       if (slots < 1 || framesPerChunk < 1 || maximumFrameBytes < 29 || maximumChunkBytes < 4 || byteBudget < 4)
         throw new ArgumentOutOfRangeException();
       chunks = new Chunk[slots];
+      this.framesPerChunk = framesPerChunk;
       for (int i = 0; i < slots; i++) chunks[i] = new Chunk(framesPerChunk);
       maxChunkBytes = maximumChunkBytes; maxFrameBytes = maximumFrameBytes; budget = byteBudget;
+    }
+    // Call after playback reset. Workers keep their bytes until Return, even
+    // when the new window no longer has a slot for their outstanding lease.
+    public void Resize(int slots)
+    {
+      ReceiverPrefetchWindow.ValidateChunks(slots);
+      lock (gate)
+      {
+        if (disposed) throw new ObjectDisposedException(nameof(EncodedChunkPool));
+        if (slots == chunks.Length) return;
+        var candidates = (Chunk[])chunks.Clone();
+        Array.Sort(candidates, (a, b) => a.leased != b.leased ? (a.leased ? -1 : 1)
+          : (b.bytes == null ? 0 : b.bytes.Length).CompareTo(a.bytes == null ? 0 : a.bytes.Length));
+        var resized = new Chunk[slots];
+        for (int i = 0; i < slots; i++) resized[i] = i < candidates.Length ? candidates[i] : new Chunk(framesPerChunk);
+        for (int i = slots; i < candidates.Length; i++)
+        {
+          var chunk = candidates[i]; chunk.retired = true;
+          if (!chunk.leased && chunk.bytes != null) { allocated -= chunk.bytes.Length; chunk.bytes = null; }
+        }
+        chunks = resized;
+        peakLeasedPayload = leasedPayload; peakLeasedSlots = leasedSlots;
+      }
     }
     Chunk Rent(int size)
     {
       lock (gate)
       {
         if (disposed) throw new ObjectDisposedException(nameof(EncodedChunkPool));
+        if (leasedSlots >= chunks.Length) throw new InvalidOperationException("Receiver chunk pool is full.");
         // Prefer an already large enough lease, rather than growing every slot.
         Chunk candidate = null;
         foreach (var chunk in chunks)
@@ -138,7 +165,7 @@ namespace StreamingMesh.Core.Rendering
         leasedPayload -= chunk.payloadBytes; leasedSlots--; chunk.payloadBytes = 0;
         Array.Clear(chunk.frames, 0, chunk.count);
         chunk.count = 0; chunk.retained = 0; chunk.leased = false;
-        if (disposed && chunk.bytes != null) { allocated -= chunk.bytes.Length; chunk.bytes = null; }
+        if ((disposed || chunk.retired) && chunk.bytes != null) { allocated -= chunk.bytes.Length; chunk.bytes = null; }
       }
     }
     public Chunk Parse(int chunkIndex, byte[] compressed, long ticks, int combined, float interval)

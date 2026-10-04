@@ -27,7 +27,9 @@ Unityのメッシュ・音声ストリーミング実装と、UnityChan KAGURA�
 
 KAGURA ReceiverはURP ToonでSenderのマテリアル設定を復元します。更新後はSenderでCreate Channelと録画を作り直し、Receiverで再接続してください。テンプレート設定と送信対象は[Receiverのマテリアル復元](Docs/RECEIVER_MATERIALS.md)を参照してください。
 
-Receiverは上限付きのリングバッファとチャンク・頂点スナップショットの再利用で、フレームごとの管理ヒープ割り当てを抑えます。WebサンプルのWASMメモリ上限は4096MBです。バッファの所有権、制限と割り当て検証は[Web受信側のメモリ管理](Docs/WEB_TESTING.md#receiverのメモリ管理)を参照してください。
+Receiverは上限付きのリングバッファとチャンク・頂点スナップショットの再利用で、フレームごとの管理ヒープ割り当てを抑えます。WebサンプルのWASMメモリ上限は4096MBです。頂点の保持数は標準3ファイルで、ReceiverのInspector／`ConfigureBuffering`／KAGURAの`Buffer settings`から変更できます。Web音声の先読み・過去の保持秒数も指定できます。バッファの所有権、制限と割り当て検証は[Web受信側のメモリ管理](Docs/WEB_TESTING.md#receiverのメモリ管理)を参照してください。
+
+現在のチャンネル形式はv6です。JSONプロパティをlowerCamelCaseへ統一し、`stream.stma.sequence`を削除しました。旧チャンネルは再作成してください。形式と収録中の追記再生の前提は[ストリーム形式](Docs/STREAM_FORMAT.md)を参照してください。
 
 ## TimeWireモジュール
 

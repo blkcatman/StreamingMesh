@@ -42,13 +42,13 @@ namespace StreamingMesh.Core.Serialization
   [Serializable]
   public class ChannelInfo : BaseInfo
   {
-    public const int CurrentVersion = 5;
-    public int protocol_version;
-    public long timebase_hz;
-    public int container_size;
-    public int package_size;
-    public float frame_interval;
-    public int combined_frames;
+    public const int CurrentVersion = 6;
+    public int protocolVersion;
+    public long timebaseHz;
+    public int containerSize;
+    public int packageSize;
+    public float frameInterval;
+    public int combinedFrames;
     public List<string> meshes;
     public List<string> materials;
     public List<string> textures;
@@ -57,19 +57,19 @@ namespace StreamingMesh.Core.Serialization
     public List<int> materialSizes;
     public List<int> textureSizes;
     public List<TexturePayloadInfo> texturePayloads;
-    public List<InitialDataPart> initial_data;
-    public List<TextureVariantInfo> texture_variants;
-    public string stream_info;
-    public string audio_info;
-    public string audio_clip;
-    public string audio_format;
-    public string audio_mime_type;
-    public string audio_codec;
-    public int audio_timescale;
-    public int audio_sample_rate;
-    public int audio_channels;
-    public string audio_init;
-    public string audio_playlist;
+    public List<InitialDataPart> initialData;
+    public List<TextureVariantInfo> textureVariants;
+    public string streamInfo;
+    public string audioInfo;
+    public string audioClip;
+    public string audioFormat;
+    public string audioMimeType;
+    public string audioCodec;
+    public int audioTimescale;
+    public int audioSampleRate;
+    public int audioChannels;
+    public string audioInit;
+    public string audioPlaylist;
   }
 
   [Serializable]
@@ -135,9 +135,9 @@ namespace StreamingMesh.Core.Serialization
     public uint lastSequence;
   }
   
+  [Serializable]
   public class AudioInfo : BaseInfo
   {
-    public uint sequence;
     public string audio;
     public long startTicks;
     public long endTicks;

@@ -520,7 +520,7 @@ namespace StreamingMesh
       string fileName,
       byte[] data)
     {
-      AudioInfo audioInfo = serializer.CreateAudioInfo(sequence, fileName, startSample, sampleCount);
+      AudioInfo audioInfo = serializer.CreateAudioInfo(fileName, startSample, sampleCount);
       serializer.Send(data, "audio", fileName);
       serializer.Send(audioInfo, sequence);
     }

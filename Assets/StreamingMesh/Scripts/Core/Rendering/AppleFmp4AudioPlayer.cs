@@ -15,11 +15,11 @@ namespace StreamingMesh.Core.Rendering
     {
 #if UNITY_IOS || UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
       Dispose();
-      if (channelInfo == null || string.IsNullOrEmpty(channelInfo.audio_playlist))
+      if (channelInfo == null || string.IsNullOrEmpty(channelInfo.audioPlaylist))
         return false;
 
       string separator = channelUrl.EndsWith("/", StringComparison.Ordinal) ? "" : "/";
-      playlistUrl = channelUrl + separator + channelInfo.audio_playlist;
+      playlistUrl = channelUrl + separator + channelInfo.audioPlaylist;
       nextRetryTime = 0.0f;
       handle = STM_AppleAudio_Create(playlistUrl);
       if (handle <= 0)

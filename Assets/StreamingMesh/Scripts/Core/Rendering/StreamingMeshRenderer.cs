@@ -58,7 +58,10 @@ namespace StreamingMesh.Core.Rendering
     public HashSet<string> TangentMaterialIds { get; } = new HashSet<string>(StringComparer.Ordinal);
     public bool IsGpuResident { get { return m_GpuPipeline != null; } }
     public int EncodedFrameCount { get { return m_EncodedFrames == null ? 0 : m_EncodedFrames.Count; } }
-    public bool CanAcceptChunk { get { return EncodedFrameCount < Math.Max(16, m_CombinedFrames * 2) && (m_ChunkPool == null || m_ChunkPool.HasFreeChunk); } }
+    int m_EncodedAdmissionThreshold;
+    int m_EncodedChunkSlots;
+    public int VertexPrefetchChunks { get; private set; } = ReceiverPrefetchWindow.DefaultVertexChunks;
+    public bool CanAcceptChunk { get { return (m_EncodedFrames == null || EncodedFrameCount < m_EncodedAdmissionThreshold) && (m_ChunkPool == null || m_ChunkPool.HasFreeChunk); } }
     public int PendingGpuFrameCount { get { return m_PendingGpuFrames.Count; } }
     public long GpuPoolBytes { get { return m_GpuPipeline == null ? 0 : m_GpuPipeline.PoolBytes; } }
     public long GpuModelBytes { get { return m_GpuPipeline == null ? 0 : m_GpuPipeline.ModelBytes; } }
@@ -73,7 +76,7 @@ namespace StreamingMesh.Core.Rendering
       if (m_VertexLayout != null) foreach (var a in m_VertexLayout) cpuBytes += (long)a.Length*4;
       if (m_InterpolatedVertices != null) foreach (var a in m_InterpolatedVertices) cpuBytes += (long)a.Length*12;
       if (m_DecodedPool != null) foreach (var f in m_DecodedPool) if (f.vertices != null) foreach (var a in f.vertices) cpuBytes += (long)a.Length*4;
-      return $"chunkCapacity={capacity} chunkPayload={payload} chunkPeakPayload={peakPayload} chunkLeases={leases} chunkPeakLeases={peakLeases} chunkSlots={slots} encodedFrames={EncodedFrameCount} encodedCapacity={(m_EncodedFrames == null ? 0 : m_EncodedFrames.Capacity)} decodedFrames={BufferedFrameCount} decodedCapacity={(m_DecodedPool == null ? 0 : m_DecodedPool.Length)} cpuArrayBytes={cpuBytes} gpuBufferBytes={GpuPoolBytes} gpuModelBytes={GpuModelBytes} gpuUploadArrayBytes={(m_GpuPipeline == null ? 0 : m_GpuPipeline.UploadArrayBytes)} gpuMaxInputBytes={(m_GpuPipeline == null ? 0 : m_GpuPipeline.MaximumObservedInputBytes)} gpuPeakSlots={(m_GpuPipeline == null ? 0 : m_GpuPipeline.PeakHeldSlots)}";
+      return $"vertexPrefetchChunks={VertexPrefetchChunks} chunkCapacity={capacity} chunkPayload={payload} chunkPeakPayload={peakPayload} chunkLeases={leases} chunkPeakLeases={peakLeases} chunkSlots={slots} encodedFrames={EncodedFrameCount} encodedCapacity={(m_EncodedFrames == null ? 0 : m_EncodedFrames.Capacity)} decodedFrames={BufferedFrameCount} decodedCapacity={(m_DecodedPool == null ? 0 : m_DecodedPool.Length)} cpuArrayBytes={cpuBytes} gpuBufferBytes={GpuPoolBytes} gpuModelBytes={GpuModelBytes} gpuUploadArrayBytes={(m_GpuPipeline == null ? 0 : m_GpuPipeline.UploadArrayBytes)} gpuMaxInputBytes={(m_GpuPipeline == null ? 0 : m_GpuPipeline.MaximumObservedInputBytes)} gpuPeakSlots={(m_GpuPipeline == null ? 0 : m_GpuPipeline.PeakHeldSlots)}";
     }
 
     public long EncodedPoolBytes => m_ChunkPool == null ? 0 : m_ChunkPool.AllocatedBytes;
@@ -342,15 +345,36 @@ namespace StreamingMesh.Core.Rendering
       }
     }
 
+    /// <summary>Change encoded storage after resetting playback; model/GPU pose resources are retained.</summary>
+    public void ConfigureVertexPrefetch(int chunks)
+    {
+      ReceiverPrefetchWindow.ValidateChunks(chunks);
+      if (chunks == VertexPrefetchChunks) return;
+      ResetPlayback(); // Invalidates workers before their old leases can return.
+      VertexPrefetchChunks = chunks;
+      ReceiverPrefetchWindow.Layout(chunks, m_CombinedFrames,
+        out int threshold, out int capacity, out int slots);
+      if (m_EncodedFrames == null) return;
+      // Retain existing payload arrays; shrink drops only surplus storage.
+      m_ChunkPool.Resize(slots);
+      m_EncodedChunkSlots = slots;
+      m_EncodedAdmissionThreshold = threshold;
+      if (m_EncodedFrames.Capacity != capacity) m_EncodedFrames = new FrameRing<EncodedFrameSlice>(capacity);
+      m_RecentChunks = new int[slots * 2];
+      for (int i = 0; i < m_RecentChunks.Length; i++) m_RecentChunks[i] = -1;
+    }
+
     void EnsureEncodedStorage()
     {
       if (m_EncodedFrames != null) return;
-      int threshold = Math.Max(16, m_CombinedFrames * 2);
-      int slots = (threshold + m_CombinedFrames - 1) / m_CombinedFrames + 2;
+      ReceiverPrefetchWindow.Layout(VertexPrefetchChunks, m_CombinedFrames,
+        out int threshold, out int capacity, out int slots);
+      m_EncodedAdmissionThreshold = threshold;
+      m_EncodedChunkSlots = slots;
       int vertices = 0;
       foreach (var mesh in m_MeshList) vertices = checked(vertices + mesh.vertexCount);
       int maximumFrame = vertices == 0 ? 16 * 1024 * 1024 : checked(29 + vertices * 11);
-      m_EncodedFrames = new FrameRing<EncodedFrameSlice>(threshold + m_CombinedFrames);
+      m_EncodedFrames = new FrameRing<EncodedFrameSlice>(capacity);
       m_ChunkPool = new EncodedChunkPool(slots, m_CombinedFrames, maximumFrame);
       m_RecentChunks = new int[slots * 2];
       for (int i = 0; i < m_RecentChunks.Length; i++) m_RecentChunks[i] = -1;

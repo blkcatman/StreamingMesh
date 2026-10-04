@@ -65,8 +65,8 @@ function harness(capacity = 1000) {
     addSourceBuffer() { this.buffer = new Buffer(); return this.buffer; }
   }
   Object.defineProperty(audio, 'buffered', {get: () => source?.buffer?.buffered || ranges([])});
-  const entries = Array.from({length:36}, (_,sequence) => ({sequence, audio:'audio-'+sequence,
-    startTicks:sequence*100000000, endTicks:(sequence+1)*100000000}));
+  const entries = Array.from({length:36}, (_,index) => ({audio:'audio-'+index,
+    startTicks:index*100000000, endTicks:(index+1)*100000000}));
   const context = {
     Module: {}, LibraryManager: {library:{}}, mergeInto: Object.assign, UTF8ToString: value => value,
     console: {error: (...args) => errors.push(args.join(' ')), warn() {}},
@@ -89,7 +89,7 @@ function harness(capacity = 1000) {
   const player = context.Module.StreamingMeshFmp4.players[handle];
   const settle = async () => {for (let i=0;i<120;i++) await Promise.resolve();};
   const tick = async () => {interval?.(); await settle();};
-  return {api,handle,player,audio,source,downloads,attempts,errors,settle,tick,
+  return {api,handle,player,audio,source,downloads,attempts,errors,settle,tick,entries,
     open: async () => {await source.emit('sourceopen'); await settle();},
     block: file => {blockFile=file;}, unblock: () => {blockFile=null; release?.();}};
 }
@@ -107,6 +107,24 @@ function harness(capacity = 1000) {
   assert.equal(bounded.downloads.filter(x => x === 'audio-0').length, 2, 'Backward seek must refetch evicted audio');
   assert.ok(bounded.source.buffer.buffered.end(0) <= 90, 'Backward seek must evict distant future audio');
 
+  const adjustable = harness(); await adjustable.open(); await adjustable.tick();
+  adjustable.api.STM_Fmp4_ConfigureBuffering(adjustable.handle, 5, 2); await adjustable.settle(); await adjustable.tick();
+  assert.ok(adjustable.source.buffer.buffered.end(0) <= 15, 'Shorter window must evict old future audio');
+  const pausedDownloads = adjustable.downloads.length; await adjustable.tick();
+  assert.equal(adjustable.downloads.length, pausedDownloads, 'Paused short window must stop downloading');
+  adjustable.audio.currentTime = 12; await adjustable.tick();
+  assert.ok(adjustable.source.buffer.buffered.start(0) >= 10, 'Configured history was not evicted');
+  adjustable.api.STM_Fmp4_ConfigureBuffering(adjustable.handle, 25, 2); await adjustable.settle(); await adjustable.tick();
+  assert.ok(adjustable.source.buffer.buffered.end(0) >= 40, 'Larger window must resume prefetch');
+
+  const live = harness(); const later = live.entries.splice(2);
+  live.entries.reverse(); await live.open(); await live.tick();
+  assert.equal(live.source.buffer.buffered.end(0), 20);
+  assert.equal(live.downloads[1], 'audio-0', 'PTS must order entries without sequence');
+  live.entries.push(...later.slice(0, 2)); live.audio.currentTime = 15; await live.tick();
+  assert.equal(live.source.buffer.buffered.end(0), 40, 'Growing playlist must append audio without reconnect');
+  assert.equal(live.source.duration, 40, 'Live duration must grow with the playlist');
+
   const quota = harness(20); await quota.open(); await quota.tick();
   const blocked = quota.player.queue[0];
   assert.equal(blocked.file, 'audio-2'); assert.ok(quota.player.quotaBlocked);
@@ -123,5 +141,5 @@ function harness(capacity = 1000) {
   assert.equal(stale.attempts.filter(x => x.file === 'audio-7').length, 0, 'Old fetch must not append after seeking');
   stale.api.STM_Fmp4_Destroy(stale.handle); await stale.tick();
   assert.equal(stale.player.destroyed, true);
-  console.log('PASS Web audio: bounded prefetch, quota retry, forward/backward seek, stale fetch and destroy');
+  console.log('PASS Web audio: sequence-free growing playlist, adjustable prefetch/history, quota retry, forward/backward seek, stale fetch and destroy');
 })().catch(error => {console.error(error); process.exitCode=1;});

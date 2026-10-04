@@ -34,12 +34,12 @@ namespace StreamingMesh {
 ) {
 #if UNITY_EDITOR
 			ChannelInfo channelInfo = new ChannelInfo {
-				protocol_version = ChannelInfo.CurrentVersion,
-				timebase_hz = TimeSpan.TicksPerSecond,
-				container_size = containerSize,
-				package_size = packageSize,
-				frame_interval = frameInterval,
-				combined_frames = comvinedFrames,
+				protocolVersion = ChannelInfo.CurrentVersion,
+				timebaseHz = TimeSpan.TicksPerSecond,
+				containerSize = containerSize,
+				packageSize = packageSize,
+				frameInterval = frameInterval,
+				combinedFrames = comvinedFrames,
 				meshes = meshNames,
 				materials = materialNames,
 				textures = textureNames,
@@ -47,17 +47,17 @@ namespace StreamingMesh {
 				meshSizes = meshSizes,
 				materialSizes = materialSizes,
 				textureSizes = textureSizes,
-                initial_data = new List<InitialDataPart>(),
-				stream_info = "stream.stmj",
-				audio_info = "stream.stma",
-				audio_format = "fmp4",
-				audio_mime_type = "audio/mp4",
-				audio_codec = "mp4a.40.2",
-				audio_timescale = STMAudioRecorder.EncodedSampleRate,
-				audio_sample_rate = STMAudioRecorder.EncodedSampleRate,
-				audio_channels = 2,
-				audio_init = "audio-init.mp4",
-				audio_playlist = "audio.m3u8"
+                initialData = new List<InitialDataPart>(),
+				streamInfo = "stream.stmj",
+				audioInfo = "stream.stma",
+				audioFormat = "fmp4",
+				audioMimeType = "audio/mp4",
+				audioCodec = "mp4a.40.2",
+				audioTimescale = STMAudioRecorder.EncodedSampleRate,
+				audioSampleRate = STMAudioRecorder.EncodedSampleRate,
+				audioChannels = 2,
+				audioInit = "audio-init.mp4",
+				audioPlaylist = "audio.m3u8"
 			};
 			return channelInfo;
 #else
@@ -169,12 +169,11 @@ namespace StreamingMesh {
 #endif
 		}
 
-		public AudioInfo CreateAudioInfo(uint sequence, string fileName, long startSample, int sampleCount) {
+		public AudioInfo CreateAudioInfo(string fileName, long startSample, int sampleCount) {
 #if UNITY_EDITOR
 			long startTicks = startSample * TimeSpan.TicksPerSecond / STMAudioRecorder.EncodedSampleRate;
 			long endTicks = (startSample + sampleCount) * TimeSpan.TicksPerSecond / STMAudioRecorder.EncodedSampleRate;
 			AudioInfo audioInfo = new AudioInfo() {
-				sequence = sequence,
 				audio = fileName,
 				startTicks = startTicks,
 				endTicks = endTicks,

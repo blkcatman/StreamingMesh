@@ -1,6 +1,6 @@
 # StreamingMesh エンコード／デコード仕様
 
-この文書は、事前データ `<ランダム32桁>.bin`、時系列頂点データ `*.stmv`、fMP4音声がどのように生成・配信され、受信側で復元されるかを、現在のプロトコルv5実装に沿って説明する。Meshフレーム形式はv2から変更しない。
+この文書は、事前データ `<ランダム32桁>.bin`、時系列頂点データ `*.stmv`、fMP4音声がどのように生成・配信され、受信側で復元されるかを、現在のプロトコルv6実装に沿って説明する。Meshフレーム形式はv2から変更しない。
 
 バイト単位のフィールド一覧は [STREAM_FORMAT.md](STREAM_FORMAT.md) も参照すること。
 
@@ -49,8 +49,8 @@
 ## 2. 共通規約
 
 - 整数と浮動小数点数は little-endian とする。
-- `timebase_hz` は `10,000,000` で、1 tick は100 nsである。
-- 現行 `protocol_version` は `5` である。Meshフレームヘッダーの識別値は `2` のままである。
+- `timebaseHz` は `10,000,000` で、1 tick は100 nsである。
+- 現行 `protocolVersion` は `6` である。Meshフレームヘッダーの識別値は `2` のままである。
 - `.bin` と `.stmv` は拡張子に関係なく、ファイル全体が GZip ストリームである。
 - GZip処理には `System.IO.Compression.GZipStream` を使用する。
 - GZipは通信量を減らす可逆圧縮であり、頂点の量子化による非可逆圧縮とは別工程である。
@@ -68,7 +68,7 @@
 - Unity EditorでGPU Blitして読み出し可能な一時Textureへ転送し、`EditorUtility.CompressTexture()` で選択したGPUブロック形式へ圧縮する。元アセットは再インポートしない。
 - sRGB／linearを保持し、NormalMapはインポート時のチャンネル配置から法線XYZを復元してRGBへ保存する。
 
-Senderは既定でBC7、ASTC 4×4、ASTC 6×6、DXT5、ETC2 RGBA8の5形式を書き出し、`stream.json.texture_variants`に各形式の目録を格納する。Receiverは寸法・sRGB／Linearを含むGPU対応状況を確認して先頭の対応形式を選び、その形式のファイルだけを読み込む。全形式のブロックを同時に保持しない。DXT1／ETC2 RGBはアルファを保持しないため、明示選択用とする。
+Senderは既定でBC7、ASTC 4×4、ASTC 6×6、DXT5、ETC2 RGBA8の5形式を書き出し、`stream.json.textureVariants`に各形式の目録を格納する。Receiverは寸法・sRGB／Linearを含むGPU対応状況を確認して先頭の対応形式を選び、その形式のファイルだけを読み込む。全形式のブロックを同時に保持しない。DXT1／ETC2 RGBはアルファを保持しないため、明示選択用とする。
 
 #### マテリアル
 
@@ -123,7 +123,7 @@ MeshInfo
 
 Material JSON→Mesh JSON→GPU Textureの順で、1リソースずつ`InitialDataPartWriter`へ渡す。Writerは64KiBの作業バッファからGZipへ順次書き、1リソースを書き終わって既定64MiB目安（指定可能1〜128MiB）以上になった時にファイルを閉じる。次のリソースを追加すると128MiBを超える場合は追加前に閉じる。1枚のTextureの途中では分割しない。名前は毎回生成するランダム32桁＋`.bin`。全モデルの`List<byte>`や64MiBの展開後配列は作らない。GZip後のファイルの出力用メモリは必要である。
 
-`stream.json` の `initial_data` がファイル順、圧縮前後のサイズ、SHA-256、リソース種別・インデックス・各オフセットを持つ。大きなTextureは複数ファイルに分割する。詳細と上限は [STREAM_FORMAT.md](STREAM_FORMAT.md#v5の初期データ) を参照。
+`stream.json` の `initialData` がファイル順、圧縮前後のサイズ、SHA-256、リソース種別・インデックス・各オフセットを持つ。Texture1枚をファイル間で分割せず、リソース単位で複数ファイルへ振り分ける。詳細と上限は [STREAM_FORMAT.md](STREAM_FORMAT.md#v6の初期データ) を参照。
 
 ### 3.3 初期データのデコード
 
@@ -141,7 +141,7 @@ Material JSON→Mesh JSON→GPU Textureの順で、1リソースずつ`InitialDa
 
 ### 4.1 フレーム取得
 
-Senderは設定された `frame_interval` ごとに対象の全 `SkinnedMeshRenderer` を処理する。
+Senderは設定された `frameInterval` ごとに対象の全 `SkinnedMeshRenderer` を処理する。
 
 1. `BakeMesh()` で現在のスキニング結果を得る。
 2. 頂点配列をGPUの `StructuredBuffer<float3>` へ転送する。
@@ -258,11 +258,11 @@ ptsTicks = (Time.realtimeSinceStartupAsDouble - recordStartRealtime)
          * TimeSpan.TicksPerSecond
 ```
 
-`frame_interval` からの推定値ではなく実際のキャプチャ時刻なので、Editorのフレーム変動やGPU読み戻しのバックプレッシャーがあっても受信側の時間軸を保てる。
+`frameInterval` からの推定値ではなく実際のキャプチャ時刻なので、Editorのフレーム変動やGPU読み戻しのバックプレッシャーがあっても受信側の時間軸を保てる。
 
 ### 4.6 `.stmv` チャンク化
 
-確定したフレームを最大 `combined_frames` 個まとめる。GZip前のチャンク構造は次のとおり。
+確定したフレームを最大 `combinedFrames` 個まとめる。GZip前のチャンク構造は次のとおり。
 
 ```text
 frameCount:int32
@@ -292,19 +292,21 @@ frameData[1]
 
 ### 5.1 チャンクの受信と分割
 
-Receiverは `stream.stmj` の追加行をpollingし、未取得の `.stmv` を取得する。
+Receiverは `stream.stmj` の追加行をpollingし、未取得の `.stmv` を取得する。収録中でも、完成したファイルとその参照行が順に公開されれば同じ接続で再生する。JSONの名前はv6でlowerCamelCaseへ統一した。詳細は[STREAM_FORMAT.md](STREAM_FORMAT.md)を参照。
+
+頂点の保持範囲は`Receiver.ConfigureBuffering(vertexChunks, webAudioSeconds, webAudioBackSeconds)`で変更できる。標準3ファイル（現在消費中を含む）、1〜16ファイルの指定に対し、8192フレーム・配列合計256MiBの上限も適用する。消費済みの展開配列を再利用し、全尺の頂点を事前ロードしない。Web音声の未来／過去の保持秒数は別に指定し、ネイティブ音声はOSプレーヤーがバッファを管理する。
 
 1. `.stmv` 全体をGZip展開する。
 2. `frameCount` と `frameSizes[]` を検証する。
-3. 各フレームを切り出す。
+3. 各フレームのオフセットと長さを保存する（フレームごとのbyte配列は作らない）。
 4. プロトコルv2ならオフセット1のシーケンス番号とオフセット21のPTSを読む。
 5. シーケンス番号をキーにした整列済みキューへ、重複なしで追加する。
 
 プロトコルv1の21バイトヘッダーも後方互換で受理する。その場合のPTSは次の式で合成する。
 
 ```text
-presentationTime = StreamInfo.startTicks / timebase_hz
-                 + frameIndex * frame_interval
+presentationTime = StreamInfo.startTicks / timebaseHz
+                 + frameIndex * frameInterval
 ```
 
 ### 5.2 キーフレームの復元
@@ -389,7 +391,7 @@ keyframeStep = containerSize / (floor(packageSize / 2) * 32)
 
 ### 差分範囲
 
-差分はbyteへclampされるため、非常に大きい1フレーム移動は飽和する。正側の最大復元量は `127^2 / 16384`、負側は `-128^2 / 16384` であり、完全な対称範囲ではない。大きく変形する素材では `frame_interval` を短くするか、キーフレーム間隔を短くする。
+差分はbyteへclampされるため、非常に大きい1フレーム移動は飽和する。正側の最大復元量は `127^2 / 16384`、負側は `-128^2 / 16384` であり、完全な対称範囲ではない。大きく変形する素材では `frameInterval` を短くするか、キーフレーム間隔を短くする。
 
 ### 現行制限
 

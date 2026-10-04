@@ -1,4 +1,4 @@
-"""Validate Sender-produced v5 (or archived v4) initial data and complete mesh/audio recordings."""
+"""Validate Sender-produced v6 initial data and complete mesh/audio recordings."""
 import argparse
 import gzip
 import hashlib
@@ -15,14 +15,21 @@ root = args.channel
 read_json = lambda path: json.loads(path.read_text(encoding="utf-8-sig"))
 info = read_json(root / "stream.json")
 if args.texture_format:
-    variant = next(v for v in info["texture_variants"] if v["format"] == args.texture_format)
-    for key in ("textureSizes", "texturePayloads", "initial_data"): info[key] = variant[key]
-assert info["protocol_version"] in (4, 5), "Expected v5 or archived v4 channel"
+    variant = next(v for v in info["textureVariants"] if v["format"] == args.texture_format)
+    for key in ("textureSizes", "texturePayloads", "initialData"): info[key] = variant[key]
+assert info["protocolVersion"] == 6, "Expected v6 channel"
+def check_keys(value):
+    if isinstance(value, dict):
+        assert all(re.fullmatch(r"[a-z][A-Za-z0-9]*", key) for key in value), "Non-camelCase metadata key"
+        for child in value.values(): check_keys(child)
+    elif isinstance(value, list):
+        for child in value: check_keys(child)
+check_keys(info)
 for ids in (info["materials"], info["textures"]):
     assert len(set(ids)) == len(ids) and all(re.fullmatch("[0-9a-f]{64}", key) for key in ids)
 assert len(info["textures"]) == len(info["textureNames"])
 resources = [[], [], []]
-if info["protocol_version"] == 4:
+if info["protocolVersion"] == 4:
     data = gzip.decompress((root / info["data"]).read_bytes())
     assert len(data) <= 128 * 1024 * 1024
     assert len(data) == sum(info["textureSizes"] + info["materialSizes"] + info["meshSizes"])
@@ -39,7 +46,7 @@ else:
     kind = index = resource_offset = initial_bytes = compressed_bytes = 0
     metadata = bytearray()
     names = set()
-    for part in info["initial_data"]:
+    for part in info["initialData"]:
         assert re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9_.-]{0,91}\.bin", part["file"])
         assert part["file"].lower() not in names
         names.add(part["file"].lower())
@@ -93,8 +100,10 @@ for raw in resources[1]:
     assert all(0 <= index < mesh["vertexCount"] for index in mesh["indices"])
     vertices += mesh["vertexCount"]
 playlist = lambda name: [json.loads(line) for line in (root / name).read_text(encoding="utf-8-sig").splitlines() if line.strip()]
-chunks = playlist(info["stream_info"])
-audio = playlist(info["audio_info"])
+chunks = playlist(info["streamInfo"])
+audio = playlist(info["audioInfo"])
+assert all("sequence" not in row for row in audio), "Audio sequence was not removed"
+for row in audio: check_keys(row)
 last_seq = last_pts = -1
 frames = 0
 for chunk in chunks:
@@ -113,7 +122,7 @@ for chunk in chunks:
 for previous, following in zip(audio, audio[1:]):
     assert previous["startSample"] + previous["sampleCount"] == following["startSample"]
 assert all((root / item["audio"]).is_file() for item in audio)
-print(json.dumps(dict(protocol=info["protocol_version"], materials=len(info["materials"]), textures=len(info["textures"]),
+print(json.dumps(dict(protocol=info["protocolVersion"], materials=len(info["materials"]), textures=len(info["textures"]),
     meshes=len(info["meshes"]), vertices=vertices, texturePropertyReferences=len(references),
     chunks=len(chunks), frames=frames, audioSegments=len(audio), meshEndSeconds=last_pts/1e7,
     audioEndSeconds=audio[-1]["endTicks"]/1e7, initialBytes=initial_bytes), indent=2))

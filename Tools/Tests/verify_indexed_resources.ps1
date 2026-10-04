@@ -50,6 +50,7 @@ $dependencies = @{
 @{dependencies=$dependencies} | ConvertTo-Json | Set-Content -LiteralPath "$VerificationProject/Packages/manifest.json" -Encoding utf8
 
 if (-not $Output) { $Output = Join-Path $repoRoot 'Builds/IndexedReceiver' }
+$Output = [IO.Path]::GetFullPath($Output)
 New-Item -ItemType Directory -Force -Path "$VerificationProject/Assets/Samples/UnityChanKAGURA/Prefabs" | Out-Null
 Copy-Item -Path "$repoRoot/Assets/Samples/UnityChanKAGURA/Prefabs/UnityChanKAGURA.prefab*" -Destination "$VerificationProject/Assets/Samples/UnityChanKAGURA/Prefabs" -Force
 if (-not $ChannelOutput) { $ChannelOutput = Join-Path $repoRoot 'DevData/channels/channel_KAGURA_INDEX' }

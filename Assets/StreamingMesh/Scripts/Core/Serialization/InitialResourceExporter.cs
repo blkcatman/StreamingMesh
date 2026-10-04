@@ -16,15 +16,15 @@ namespace StreamingMesh.Core.Serialization
       foreach (var format in formats) if (!Enum.IsDefined(typeof(GpuTextureFormat), format) || !seen.Add(format))
         throw new ArgumentException("Invalid/duplicate GPU texture format.");
       var variants = new List<TextureVariantInfo>();
-      info.texture_variants = null;
+      info.textureVariants = null;
       foreach (var format in formats)
       {
         Export(info, materials, meshes, textures, format, publish, partBytes);
         variants.Add(new TextureVariantInfo { format = format.ToString(), textureSizes = info.textureSizes,
-          texturePayloads = info.texturePayloads, initial_data = info.initial_data });
+          texturePayloads = info.texturePayloads, initialData = info.initialData });
       }
       info.textureSizes = variants[0].textureSizes; info.texturePayloads = variants[0].texturePayloads;
-      info.initial_data = variants[0].initial_data; info.texture_variants = variants;
+      info.initialData = variants[0].initialData; info.textureVariants = variants;
     }
 
     public static void Export(ChannelInfo info, IList<MaterialInfo> materials, IList<MeshInfo> meshes,
@@ -33,7 +33,7 @@ namespace StreamingMesh.Core.Serialization
     {
       if (info.materials.Count != materials.Count || info.meshes.Count != meshes.Count || info.textures.Count != textures.Count)
         throw new ArgumentException("Initial resource tables disagree.");
-      info.texture_variants = null;
+      info.textureVariants = null;
       info.materialSizes = new List<int>(); info.meshSizes = new List<int>(); info.textureSizes = new List<int>();
       info.texturePayloads = new List<TexturePayloadInfo>();
       using (var writer = new InitialDataPartWriter(publish, partBytes))
@@ -63,8 +63,8 @@ namespace StreamingMesh.Core.Serialization
           }
           finally { if (encoded != null) UnityEngine.Object.DestroyImmediate(encoded); }
         }
-        writer.Flush(); info.initial_data = writer.Parts;
-        InitialDataParts.Validate(info.initial_data, info.materialSizes, info.meshSizes, info.textureSizes);
+        writer.Flush(); info.initialData = writer.Parts;
+        InitialDataParts.Validate(info.initialData, info.materialSizes, info.meshSizes, info.textureSizes);
       }
     }
   }

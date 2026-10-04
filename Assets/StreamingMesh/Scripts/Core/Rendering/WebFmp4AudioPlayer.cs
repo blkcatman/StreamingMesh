@@ -11,6 +11,15 @@ namespace StreamingMesh.Core.Rendering
 
     public bool IsInitialized { get { return handle > 0; } }
 
+    public void ConfigureBuffering(double aheadSeconds, double backSeconds)
+    {
+      ReceiverPrefetchWindow.Validate(aheadSeconds);
+      ReceiverPrefetchWindow.Validate(backSeconds, true);
+#if UNITY_WEBGL && !UNITY_EDITOR
+      if (handle > 0) STM_Fmp4_ConfigureBuffering(handle, aheadSeconds, backSeconds);
+#endif
+    }
+
     public bool Initialize(
       string channelUrl,
       string initFile,
@@ -34,10 +43,10 @@ namespace StreamingMesh.Core.Rendering
     {
       return Initialize(
         channelUrl,
-        channelInfo.audio_init,
-        channelInfo.audio_info,
-        string.IsNullOrEmpty(channelInfo.audio_mime_type) ? "audio/mp4" : channelInfo.audio_mime_type,
-        string.IsNullOrEmpty(channelInfo.audio_codec) ? "mp4a.40.2" : channelInfo.audio_codec);
+        channelInfo.audioInit,
+        channelInfo.audioInfo,
+        string.IsNullOrEmpty(channelInfo.audioMimeType) ? "audio/mp4" : channelInfo.audioMimeType,
+        string.IsNullOrEmpty(channelInfo.audioCodec) ? "mp4a.40.2" : channelInfo.audioCodec);
     }
 
     public bool TryGetTime(out double time)
@@ -91,6 +100,9 @@ namespace StreamingMesh.Core.Rendering
     }
 
 #if UNITY_WEBGL && !UNITY_EDITOR
+    [DllImport("__Internal")]
+    static extern void STM_Fmp4_ConfigureBuffering(int playerHandle, double aheadSeconds, double backSeconds);
+
     [DllImport("__Internal")]
     static extern int STM_Fmp4_Create(
       string channelUrl,

@@ -4,9 +4,9 @@
 
 ## バイト順と時間単位
 
-すべての整数値と浮動小数点値はリトルエンディアンで格納する。`ChannelInfo.timebase_hz` は.NETのtickと同じ `10,000,000` である。プロトコルv2では、従来の32ビットstampフィールドを単調増加するシーケンス番号として使用し、正確な64ビットの表示時刻（PTS）を追加している。
+すべての整数値と浮動小数点値はリトルエンディアンで格納する。`ChannelInfo.timebaseHz` は.NETのtickと同じ `10,000,000` である。プロトコルv2では、従来の32ビットstampフィールドを単調増加するシーケンス番号として使用し、正確な64ビットの表示時刻（PTS）を追加している。
 
-Receiverのチャンネル読み込みはv5のみ受け付ける。フレームデコーダー単体にはv1ヘッダーの処理も残るが、旧チャンネルの互換性は提供しない。
+Receiverのチャンネル読み込みはv6のみ受け付ける。フレームデコーダー単体にはv1ヘッダーの処理も残るが、旧チャンネルの互換性は提供しない。
 
 プロトコルv3ではMeshフレームヘッダー自体はv2のまま、fMP4音声ストリームを追加する。
 
@@ -16,34 +16,42 @@ v4ではMaterial／Textureの参照を表示名からリソースIDへ変更す�
 
 `stream.json` は、静的なMesh／Materialデータとストリームのプレイリストを記述する。
 
-- `protocol_version`: 現在は `5`。
-- `timebase_hz`: 1秒あたりのtick数。
-- `container_size`、`package_size`: 頂点位置の量子化パラメーター。
-- `frame_interval`: 公称フレーム間隔（秒）。
-- `combined_frames`: 1つの `.stmv` チャンクに格納する最大フレーム数。
-- `stream_info`: 改行区切りの `StreamInfo` プレイリスト。
-- `initial_data`: GZip圧縮した初期データの分割ファイル目録。
+v6では全JSONプロパティを **lowerCamelCase** に統一する。`stream.stmj`、`stream.stma`、`textureVariants`内の目録にも同じ規則を適用する。v5の`protocol_version`、`timebase_hz`、`container_size`、`package_size`、`frame_interval`、`combined_frames`、`initial_data`、`texture_variants`、`stream_info`、`audio_info`、`audio_clip`、`audio_format`、`audio_mime_type`、`audio_codec`、`audio_timescale`、`audio_sample_rate`、`audio_channels`、`audio_init`、`audio_playlist`は、それぞれ`protocolVersion`、`timebaseHz`、`containerSize`、`packageSize`、`frameInterval`、`combinedFrames`、`initialData`、`textureVariants`、`streamInfo`、`audioInfo`、`audioClip`、`audioFormat`、`audioMimeType`、`audioCodec`、`audioTimescale`、`audioSampleRate`、`audioChannels`、`audioInit`、`audioPlaylist`となる。旧名の読み替えは行わない。URLの確認用クエリやHTTPアップロードAPIの名前はJSONプロパティ規則の対象外である。
+
+- `protocolVersion`: 現在は `6`。
+- `timebaseHz`: 1秒あたりのtick数。
+- `containerSize`、`packageSize`: 頂点位置の量子化パラメーター。
+- `frameInterval`: 公称フレーム間隔（秒）。
+- `combinedFrames`: 1つの `.stmv` チャンクに格納する最大フレーム数。
+- `streamInfo`: 改行区切りの `StreamInfo` プレイリスト。
+- `initialData`: GZip圧縮した初期データの分割ファイル目録。
 - `texturePayloads`: Texture IDと同じ順序のGPUブロック形式、幅、高さ、ミップ数、linearフラグ。
-- `audio_format`: fMP4音声では `fmp4`。
-- `audio_mime_type` / `audio_codec`: 通常は `audio/mp4` / `mp4a.40.2`。
-- `audio_timescale`: fMP4の音声トラックtimescale。現在は48,000。
-- `audio_init`: MSEへ最初にappendする初期化セグメント。
-- `audio_info`: 改行区切りの`AudioInfo`プレイリスト。
+- `audioFormat`: fMP4音声では `fmp4`。
+- `audioMimeType` / `audioCodec`: 通常は `audio/mp4` / `mp4a.40.2`。
+- `audioTimescale`: fMP4の音声トラックtimescale。現在は48,000。
+- `audioInit`: MSEへ最初にappendする初期化セグメント。
+- `audioInfo`: 改行区切りの`AudioInfo`プレイリスト。
+- `audioPlaylist`: ネイティブ音声プレーヤー用のHLSプレイリスト（通常`audio.m3u8`）。
+- `audioSampleRate` / `audioChannels`: 音声出力のサンプルレート／チャンネル数。
+- `audioClip`: 静的音声クリップを使用する場合のパス。
+- `meshes` / `materials` / `textures`: リソース表。`textureNames`は表示名。
+- `meshSizes` / `materialSizes` / `textureSizes`: 各リソースのバイト長。
+- `textureVariants`: プラットフォームに応じて選択するGPU圧縮形式の候補。
 
 各 `StreamInfo` は、`video`、`startTicks`、`endTicks`、`firstSequence`、`lastSequence` を持つ。時刻は送信側で記録を開始した時点からの相対値である。
 
-## v5の初期データ
+## v6の初期データ
 
 ファイル名は書き出しごとに生成するランダムな32桁の16進文字列＋`.bin`。Material JSON→Mesh JSON→GPU圧縮Textureの順に、**1リソース全体**をGZipへ書き込む。テクスチャは1枚全体（全ミップを含む）を1リソースとし、複数のTextureを同じファイルへ格納できる。Senderはリソースをファイル間で分割しない。
 
-**展開後**64MiBを分割の目安とし、1リソースを書き終わった時点で目安以上ならファイルを閉じる。64MiBきっかりになるような切り出しはしない。次のリソースを追加すると絶対上限128MiBを超える場合は追加前に閉じる。目安はSenderの`initialPartSizeMiB`で1〜128MiBを指定できる。1リソースが128MiBを超える入力はエラーにする。GZip後のサイズには最大64KiBの余裕を認める。ファイル順は`initial_data`配列順であり、ファイル名には依存しない。
+**展開後**64MiBを分割の目安とし、1リソースを書き終わった時点で目安以上ならファイルを閉じる。64MiBきっかりになるような切り出しはしない。次のリソースを追加すると絶対上限128MiBを超える場合は追加前に閉じる。目安はSenderの`initialPartSizeMiB`で1〜128MiBを指定できる。1リソースが128MiBを超える入力はエラーにする。GZip後のサイズには最大64KiBの余裕を認める。ファイル順は`initialData`配列順であり、ファイル名には依存しない。
 
 ランダム名・複数リソースの混在は暗号化や解析防止を意味しない。Receiverに渡す目録には復元に必要な形式と境界情報を含む。リソースIDは元アセットのパスから生成し、配信用ファイル名とは独立している。
 
 ```json
 {
   "texturePayloads": [{"format":"BC7","width":8192,"height":8192,"mipCount":1,"linear":false}],
-  "initial_data": [{
+  "initialData": [{
     "file":"ed79b3a1e56a4a4099618155e74b52c7.bin", "sha256":"<compressed-file SHA-256 hex>",
     "size":67108864, "compressedSize":6454245,
     "records":[{"kind":2,"index":0,"offset":0,"resourceOffset":0,"size":67108864}]
@@ -61,7 +69,7 @@ v4ではMaterial／Textureの参照を表示名からリソースIDへ変更す�
 
 ### GPU形式の複数候補
 
-`texture_variants`に形式ごとの`format`、`textureSizes`、`texturePayloads`、`initial_data`を格納する。Material／TextureのIDとMeshキーはチャンネルで共通で、Material／Meshの定義も各候補に同じ内容を格納する。先頭候補をトップレベルの同名フィールドにも設定する。既定はBC7→ASTC_4x4→ASTC_6x6→DXT5→ETC2_RGBA8の優先順で、すべてアルファを保持する。Senderの`textureFormats`で変更でき、`exportMultipleTextureFormats=false`では`textureFormat`のみを書き出す。DXT1／ETC2_RGBも追加可能だが、アルファを失う。
+`textureVariants`に形式ごとの`format`、`textureSizes`、`texturePayloads`、`initialData`を格納する。Material／TextureのIDとMeshキーはチャンネルで共通で、Material／Meshの定義も各候補に同じ内容を格納する。先頭候補をトップレベルの同名フィールドにも設定する。既定はBC7→ASTC_4x4→ASTC_6x6→DXT5→ETC2_RGBA8の優先順で、すべてアルファを保持する。Senderの`textureFormats`で変更でき、`exportMultipleTextureFormats=false`では`textureFormat`のみを書き出す。DXT1／ETC2_RGBも追加可能だが、アルファを失う。
 
 Receiverは候補のレイアウト・GPUブロックサイズを検証し、全TextureがGPUでサンプリング可能な最初の形式を選ぶ。OS名だけでは選ばない。選んだ候補だけをHTTP取得・復元し、他候補のTextureを確保しない。1GiBの初期データ上限は候補ごとに適用する。開発サーバーは全候補のファイルが揃い、サイズ・SHA-256が一致してから目録を公開する。
 
@@ -75,7 +83,7 @@ ReceiverはファイルのSHA-256とGZipの長さを検証し、64KiBの再利�
 
 KAGURAのReconnectとReceiverのSeekでは、完成したモデルを1つだけ保持する。再取得した目録全体（ID、各ファイルのSHA-256、サイズ、セグメント、Texture形式を含む）、チャンネルURL、Shader／テンプレート参照、頂点出力設定が一致すると、Texture／Material／MeshとCPU／GPU再生バッファを再利用する。再生状態は空にして新しいキーフレームを待ち、古い非同期インポートは世代番号で拒否する。変更時は古いモデルを解放して再取得し、Disconnect／Receiver破棄で保持リソースも解放する。実行中にローカルテンプレートMaterialのプロパティ自体を書き換えた場合は`Reconnect(address, autoPlay, forceReload: true)`で明示的に再生成する。
 
-v5ではv4以前の初期データを受け付けない。MaterialInfo v3、Meshフレームv2、fMP4音声形式は維持する。
+v6ではv5以前のチャンネルを受け付けない。初期データのバイナリ配置とGPUブロック形式はv5と同じで、変更はJSONのプロパティ名と音声目録のフィールドである。MaterialInfo v3、Meshフレームv2、fMP4音声形式は維持する。
 
 ## fMP4音声
 
@@ -85,18 +93,36 @@ v5ではv4以前の初期データを受け付けない。MaterialInfo v3、Mesh
 `stream.stma`はNDJSONであり、各行は次のフィールドを持つ。
 
 ```json
-{"sequence":0,"audio":"audio-000000.m4s","startTicks":0,"endTicks":10240000,"startSample":0,"sampleCount":49152,"discontinuity":false}
+{"audio":"audio-000000.m4s","startTicks":0,"endTicks":10240000,"startSample":0,"sampleCount":49152,"discontinuity":false}
 ```
 
 - `startSample` / `sampleCount`: 48 kHz出力上の累積サンプルフレーム位置と長さ。
-- `startTicks` / `endTicks`: `timebase_hz`へ変換した同じ範囲。
+- `startTicks` / `endTicks`: `timebaseHz`へ変換した同じ範囲。
 - `discontinuity`: エンコーダー再起動などで連続性が切れた場合にtrue。
+
+v6では`sequence`を持たない。Web Receiverは`startTicks`順に並べ、ファイル名を取得済み判定に使う。ネイティブReceiverは`audioPlaylist`のHLSを使用する。Sender内部のfragment番号、HTTPアップロードのインデックス、HLSの`EXT-X-MEDIA-SEQUENCE`は別の用途なので維持する。頂点ストリームのsequenceは差分復元に必要であり維持する。
 
 時刻変換は累積値から毎回行い、丸め誤差を加算しない。
 
 ```text
-ticks = cumulativeSample * timebase_hz / audio_sample_rate
+ticks = cumulativeSample * timebaseHz / audioSampleRate
 ```
+
+## 収録中の公開とReceiverの先読み
+
+Senderは初期リソースの完成した目録を公開した後、完成した`.stmv`／`.m4s`を先に送信し、そのファイルを参照する`stream.stmj`／`stream.stma`の行を追加する。音声の`audio.m3u8`も更新する。Receiverは同じ接続で追加行をpollingし、収録完了前から再生できる。メッシュは独自の追記型プレイリスト、ネイティブ音声はHLS、Web音声はMSE経路である。
+
+参照先ファイルのアップロード完了後に、完全なJSON行＋改行を追記する必要がある。開発サーバーはファイルを原子的に置換し、行追記をロックする。同一接続中の頂点目録は追記のみを前提とする。再収録などで目録を切り詰めたり置き換えたりする場合はReconnectする。途中接続は公開済みの先頭から開始し、ライブ端へ自動移動しない。チャンクの完成待ちとpolling間隔が遅延になるため、低遅延HLS相当の保証はない。
+
+頂点の先読みはReceiverの`VertexPrefetchChunks`で **ファイル単位** に指定する。標準は3、範囲は1〜16で、現在消費中のファイルを含む最大保持数である。KAGURAの通常300フレーム／30fpsでは、3ファイルで最大約30秒分に相当し、現在ファイルの残りにより将来分は変わる。秒数を固定してファイルを切り分けることはしない。消費が終わったファイルの展開配列をプールへ返し、空いた枠で次を取得する。展開ペイロードは1ファイル最大128MiB、配列プールは合計256MiB、フレームメタデータは8192件が上限であり、大きな入力では指定数より少なくなるか、バイト上限超過で入力を拒否する。配列は必要になった時点で確保し再利用する。設定変更でも既存配列を引き継ぎ、縮小時は余剰の配列だけを解放する。処理中の旧世代スレッドが保持する配列は、その返却後に解放する。
+
+Web音声は`WebAudioPrefetchSeconds`（標準60秒、0.5〜120秒）と`WebAudioBackBufferSeconds`（標準30秒、0〜120秒）で指定する。取得はfragment全体なので未来側は最大1fragment分だけ指定値を超える。ネイティブ音声のバッファは各OSプレーヤーが管理する。デコード済み頂点の先読み0.5秒とは別の設定である。
+
+```csharp
+receiver.ConfigureBuffering(vertexChunks: 3, webAudioSeconds: 20, webAudioBackSeconds: 5);
+```
+
+KAGURA Receiverの`Buffer settings`からも変更できる。頂点保持数の変更は現在時刻で再バッファリングし、Texture／Material／Meshを再利用する。Web音声のみの変更は再接続せず反映する。
 
 ## ストリームチャンク
 
@@ -119,12 +145,12 @@ ticks = cumulativeSample * timebase_hz / audio_sample_rate
 | 5 | 3 | キーフレームのパッケージ数（`uint24`）。差分フレームでは0 |
 | 8 | 1 | ヘッダー／プロトコル識別値（`2`） |
 | 9 | 12 | ルート位置（`float32 x, y, z`） |
-| 21 | 8 | `timebase_hz` のtick単位による表示時刻（`int64`） |
+| 21 | 8 | `timebaseHz` のtick単位による表示時刻（`int64`） |
 | 29 | 可変 | フレームペイロード |
 
 表示時刻は、送信側で記録を開始した時点からの相対値である。公称固定フレームレートではなく実際のキャプチャ時刻を記録するため、GPU readbackのバックプレッシャーやUnity Editorの不規則なフレーム時間があっても、受信側の再生時間軸を維持できる。
 
-プロトコルv1の入力では、受信側が `StreamInfo.startTicks + frameIndex * frame_interval` から表示時刻を合成する。
+プロトコルv1の入力では、受信側が `StreamInfo.startTicks + frameIndex * frameInterval` から表示時刻を合成する。
 
 ## キーフレームのペイロード
 
