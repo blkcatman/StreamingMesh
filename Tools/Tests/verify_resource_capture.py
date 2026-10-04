@@ -104,6 +104,11 @@ chunks = playlist(info["streamInfo"])
 audio = playlist(info["audioInfo"])
 assert all("sequence" not in row for row in audio), "Audio sequence was not removed"
 for row in audio: check_keys(row)
+assert all(row["endTicks"] > row["startTicks"] >= 0 for row in audio), "Invalid audio range"
+if "audioSegmentDurationSeconds" in info:
+    nominal = info["audioSegmentDurationSeconds"]
+    assert 0.25 <= nominal < float("inf"), "Invalid nominal audio duration"
+
 last_seq = last_pts = -1
 frames = 0
 for chunk in chunks:
@@ -125,4 +130,7 @@ assert all((root / item["audio"]).is_file() for item in audio)
 print(json.dumps(dict(protocol=info["protocolVersion"], materials=len(info["materials"]), textures=len(info["textures"]),
     meshes=len(info["meshes"]), vertices=vertices, texturePropertyReferences=len(references),
     chunks=len(chunks), frames=frames, audioSegments=len(audio), meshEndSeconds=last_pts/1e7,
-    audioEndSeconds=audio[-1]["endTicks"]/1e7, initialBytes=initial_bytes), indent=2))
+    audioEndSeconds=audio[-1]["endTicks"]/1e7,
+    audioNominalSeconds=info.get("audioSegmentDurationSeconds"),
+    audioFileSeconds=[min((r["endTicks"]-r["startTicks"])/info["timebaseHz"] for r in audio),
+      max((r["endTicks"]-r["startTicks"])/info["timebaseHz"] for r in audio)], initialBytes=initial_bytes), indent=2))

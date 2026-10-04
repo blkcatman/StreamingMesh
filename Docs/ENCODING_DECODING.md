@@ -294,7 +294,7 @@ frameData[1]
 
 Receiverは `stream.stmj` の追加行をpollingし、未取得の `.stmv` を取得する。収録中でも、完成したファイルとその参照行が順に公開されれば同じ接続で再生する。JSONの名前はv6でlowerCamelCaseへ統一した。詳細は[STREAM_FORMAT.md](STREAM_FORMAT.md)を参照。
 
-頂点の保持範囲は`Receiver.ConfigureBuffering(vertexChunks, webAudioSeconds, webAudioBackSeconds)`で変更できる。標準3ファイル（現在消費中を含む）、1〜16ファイルの指定に対し、8192フレーム・配列合計256MiBの上限も適用する。消費済みの展開配列を再利用し、全尺の頂点を事前ロードしない。Web音声の未来／過去の保持秒数は別に指定し、ネイティブ音声はOSプレーヤーがバッファを管理する。
+頂点の保持範囲は`Receiver.ConfigureBuffering(vertexChunks, webAudioChunks, webAudioBackSeconds)`で変更できる。標準3ファイル（現在消費中を含む）、1〜16ファイルの指定に対し、8192フレーム・配列合計256MiBの上限も適用する。消費済みの展開配列を再利用し、全尺の頂点を事前ロードしない。Web音声の先読みは標準3ファイル（現在再生中を含む）、1〜16で指定し、過去の保持秒数は別に指定する。`audioSegmentDurationSeconds`はSenderの公称秒数で、実範囲は`stmj`／`stma`の`startTicks`・`endTicks`を優先する。ネイティブ音声はOSプレーヤーがバッファを管理する。
 
 1. `.stmv` 全体をGZip展開する。
 2. `frameCount` と `frameSizes[]` を検証する。

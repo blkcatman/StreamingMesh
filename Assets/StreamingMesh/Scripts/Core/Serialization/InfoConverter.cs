@@ -68,6 +68,8 @@ namespace StreamingMesh.Core.Serialization
     public int audioTimescale;
     public int audioSampleRate;
     public int audioChannels;
+    // Sender target only; stma timestamps define each fragment's exact range.
+    public float audioSegmentDurationSeconds;
     public string audioInit;
     public string audioPlaylist;
   }

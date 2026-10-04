@@ -7,10 +7,18 @@ namespace StreamingMesh.Core.Rendering
     // Includes the file currently being consumed; payload arrays grow lazily.
     public const int DefaultVertexChunks = 3;
     public const int MaximumVertexChunks = 16;
-    public const double DefaultWebAudioSeconds = 60;
+    public const int DefaultWebAudioChunks = 3;
     public const double DefaultWebAudioBackSeconds = 30;
     public const double MinimumSeconds = 0.5;
     public const double MaximumSeconds = 120;
+
+    // Playlist ranges are half-open: a file ending at the playhead is consumed.
+    public static bool IsConsumed(long startTicks, long endTicks, double timeSeconds, long timebaseHz)
+    {
+      if (timebaseHz <= 0 || startTicks < 0 || endTicks <= startTicks)
+        throw new ArgumentException("Invalid stream timestamp range.");
+      return endTicks / (double)timebaseHz <= timeSeconds;
+    }
 
     public static void Validate(double seconds, bool allowZero = false)
     {

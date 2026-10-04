@@ -344,11 +344,11 @@ Androidの最終ビルドでは音声287.397737秒まで進み、旧版で失敗
 終盤確認後、Android Webでも後方・前方シークとReconnectを実行した。解放済みの音声を再取得して再生でき、3回のリソースキャッシュヒットを観測。初期Textureのreadyログは20件のまま、ランダム名の初期binへのHTTP要求数も増えなかった。Reconnect後は0秒から再生を再開した。PCの最終ビルドはBC7で287.583269秒まで進み、音声バッファ上限例外はなかった。
 
 
-## v6・ファイル単位の先読みと追記再生（2026-10-04）
+## v6・頂点ファイル単位の先読みと追記再生（2026-10-04、4addc9a時点）
 
 `stream.json`をlowerCamelCaseに統一し、`stream.stma.sequence`を削除した。現在のSender／Receiver／開発サーバーはv6を使用し、旧名・旧チャンネルの互換読み込みは行わない。[STREAM_FORMAT.md](STREAM_FORMAT.md)に全プロパティの対応と公開順序を記載した。頂点フレームのsequenceとHLS内部のsequenceは維持する。
 
-Receiverの頂点保持数は標準3ファイル（現在消費中を含む）、1〜16で可変。Web音声の未来60秒／過去30秒も可変。KAGURAの`Buffer settings`→`Apply / rebuffer`、または`ConfigureBuffering(vertexChunks, webAudioSeconds, webAudioBackSeconds)`で変更する。頂点ファイルは分割せず、消費済みの展開配列を再利用する。設定縮小では余剰配列だけを解放し、スレッドが保持中の配列は返却を待つ。指定ファイル数のほかに8192フレーム・配列合計256MiBの上限を適用する。
+当初の検証では、頂点保持数は標準3ファイル（現在消費中を含む）、1〜16で可変。Web音声は未来60秒／過去30秒を指定していた。この秒数APIは後述の音声ファイル単位設定に置き換えた。KAGURAの`Buffer settings`→`Apply / rebuffer`で変更する。頂点ファイルは分割せず、消費済みの展開配列を再利用する。設定縮小では余剰配列だけを解放し、スレッドが保持中の配列は返却を待つ。指定ファイル数のほかに8192フレーム・配列合計256MiBの上限を適用する。
 
 検証用`channel_KAGURA_MULTI_V6`は既存Sender収録のGPU圧縮・頂点・AACデータを再使用し、目録の名前／バージョンと音声JSONだけをv6へ再構成した。新しい動画や音声を収録したものではない。9 Material／20 Texture／13 Mesh、29チャンク・8628フレームを検証した。
 
@@ -380,3 +380,18 @@ python Tools/Tests/publish_live_fixture.py --through 6
 ```
 
 記録は`Logs/WindowReceiver-events.jsonl`／`WindowReceiver-access.log`、`WindowReceiver-live.png`、`AndroidWindowReceiver-v6-fullplay-logcat.txt`／`AndroidWindowReceiver-resize-logcat.txt`、`AndroidWindowReceiver-two-files.png`。再公開用トークンはローカルの`Logs/channel_KAGURA_LIVE_V6-publisher.json`へ保存し、配信ディレクトリへ置かない。
+
+
+## Web音声のファイル単位先読みと実時刻による選択（2026-10-04）
+
+Web音声も標準3ファイル、1〜16の`WebAudioPrefetchChunks`で指定する。現在再生中のファイルを含み、過去の保持秒数は別枠。APIは`ConfigureBuffering(vertexChunks, webAudioChunks, webAudioBackSeconds)`。ネイティブ音声はHLSプレイヤー管理のままで、この音声ファイル数設定の対象外。
+
+Senderの`stream.json`に`audioSegmentDurationSeconds`を追加した。Recorderと同じ`max(0.25, combinedFrames * frameInterval)`が公称値。UnityのSender serializerで約10秒と最低0.25秒、JSONの往復を確認した。KAGURAの既存収録の実ファイル長は7.6586666〜10.0053334秒なので、公称値から厳密な範囲を決めない。両目録の`[startTicks, endTicks)`を使い、再生済みのファイルを除く。頂点は枠待ち後にも判定、Web音声は実範囲から選んだ先頭Nファイルまでを取得する。
+
+停止中のブラウザで3ファイル分のMSE範囲は0〜30.015999秒。音声だけ2ファイルへ変更すると0〜20.010666秒に縮小した。モデルの再接続は不要。3ファイルへ戻して順次補充・再生を確認した。`AudioFiles-two-files.png`に設定画面を保存した。
+
+テストは可変長／0.1秒の短いファイル、終了時刻ちょうどのシーク、空白区間、設定縮小、Quota再試行、古いダウンロード結果の破棄、追記に対応する。C#リング／プールは180,577チェック、操作の管理ヒープ確保0 byte。WebGLとAndroidのビルドも成功し、Pixel 5aで頂点・音声の同期再生を確認した。ネイティブ音声のファイル数制限を実機確認したという意味ではない。
+
+追記は既存録画のHTTP段階公開で検証する。`channel_KAGURA_AUDIO_FILES_LIVE`を2ファイルだけ公開した状態で接続し、4ファイルへ増やすと、停止中の音声は3ファイルまで取得し、durationは20.0106666→40秒に増えた。Senderで新しく収録した実験とは区別する。記録は`Logs/WindowReceiver-events.jsonl`、`WindowReceiver-access.log`、`AndroidAudioFiles-logcat.txt`。音声はブラウザのMSEに保存するため、音声先読みの縮小をWASMヒープ容量の縮小と解釈しない。
+
+追加公開を6ファイルまで増やすと、40秒付近の待機からReconnectせず再開し、59.932秒まで進んだ。通常データも287.599秒まで進み、公開済みの末尾まで取得した。ブラウザのエラー／未処理例外／append例外はこの2セッションで0件。ライブ用にMediaSourceを開いたままにする既知の終端待機は残る。`Logs/AudioFiles-summary.json`と`AudioFiles-live.png`に記録した。

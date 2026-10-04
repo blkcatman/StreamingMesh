@@ -45,6 +45,11 @@ static class ReceiverBufferTests
     Check(frames == 8192 && windowSlots == 2, "Large-file metadata cap is unbounded");
     ReceiverPrefetchWindow.Layout(16, 1, out limit, out frames, out windowSlots);
     Check(frames == 16 && windowSlots == 16, "Partial-file buffering lost the file count bound");
+    Check(!ReceiverPrefetchWindow.IsConsumed(10, 25, 2.49, 10), "Partial final file skipped");
+    Check(ReceiverPrefetchWindow.IsConsumed(10, 25, 2.5, 10), "End boundary must be exclusive");
+    Check(!ReceiverPrefetchWindow.IsConsumed(30, 80, 2.5, 10), "Future file skipped across gap");
+    try { ReceiverPrefetchWindow.IsConsumed(20, 20, 0, 10); throw new Exception("Invalid PTS accepted"); }
+    catch (ArgumentException) { checks++; }
     var ring = new FrameRing<int>(17);
     var reference = new List<int>(); var random = new Random(73);
     for (int i = 0; i < 20000; i++)

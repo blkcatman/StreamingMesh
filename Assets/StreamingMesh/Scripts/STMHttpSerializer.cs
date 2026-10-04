@@ -56,6 +56,7 @@ namespace StreamingMesh {
 				audioTimescale = STMAudioRecorder.EncodedSampleRate,
 				audioSampleRate = STMAudioRecorder.EncodedSampleRate,
 				audioChannels = 2,
+                audioSegmentDurationSeconds = Mathf.Max(0.25f, comvinedFrames * frameInterval),
 				audioInit = "audio-init.mp4",
 				audioPlaylist = "audio.m3u8"
 			};

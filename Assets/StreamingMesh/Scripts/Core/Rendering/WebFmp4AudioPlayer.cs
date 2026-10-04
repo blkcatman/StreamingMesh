@@ -11,12 +11,12 @@ namespace StreamingMesh.Core.Rendering
 
     public bool IsInitialized { get { return handle > 0; } }
 
-    public void ConfigureBuffering(double aheadSeconds, double backSeconds)
+    public void ConfigureBuffering(int aheadChunks, double backSeconds)
     {
-      ReceiverPrefetchWindow.Validate(aheadSeconds);
+      ReceiverPrefetchWindow.ValidateChunks(aheadChunks);
       ReceiverPrefetchWindow.Validate(backSeconds, true);
 #if UNITY_WEBGL && !UNITY_EDITOR
-      if (handle > 0) STM_Fmp4_ConfigureBuffering(handle, aheadSeconds, backSeconds);
+      if (handle > 0) STM_Fmp4_ConfigureBuffering(handle, aheadChunks, backSeconds);
 #endif
     }
 
@@ -25,14 +25,15 @@ namespace StreamingMesh.Core.Rendering
       string initFile,
       string playlistFile,
       string mimeType,
-      string codec)
+      string codec,
+      long timebaseHz = TimeSpan.TicksPerSecond)
     {
 #if UNITY_WEBGL && !UNITY_EDITOR
       if (handle > 0)
         return true;
       string baseUrl = channelUrl.EndsWith("/") ? channelUrl : channelUrl + "/";
       string type = mimeType + "; codecs=\"" + codec + "\"";
-      handle = STM_Fmp4_Create(baseUrl, initFile, playlistFile, type);
+      handle = STM_Fmp4_Create(baseUrl, initFile, playlistFile, type, timebaseHz);
       return handle > 0;
 #else
       return false;
@@ -46,7 +47,8 @@ namespace StreamingMesh.Core.Rendering
         channelInfo.audioInit,
         channelInfo.audioInfo,
         string.IsNullOrEmpty(channelInfo.audioMimeType) ? "audio/mp4" : channelInfo.audioMimeType,
-        string.IsNullOrEmpty(channelInfo.audioCodec) ? "mp4a.40.2" : channelInfo.audioCodec);
+        string.IsNullOrEmpty(channelInfo.audioCodec) ? "mp4a.40.2" : channelInfo.audioCodec,
+        channelInfo.timebaseHz);
     }
 
     public bool TryGetTime(out double time)
@@ -101,14 +103,14 @@ namespace StreamingMesh.Core.Rendering
 
 #if UNITY_WEBGL && !UNITY_EDITOR
     [DllImport("__Internal")]
-    static extern void STM_Fmp4_ConfigureBuffering(int playerHandle, double aheadSeconds, double backSeconds);
+    static extern void STM_Fmp4_ConfigureBuffering(int playerHandle, int aheadChunks, double backSeconds);
 
     [DllImport("__Internal")]
     static extern int STM_Fmp4_Create(
       string channelUrl,
       string initFile,
       string playlistFile,
-      string mimeType);
+      string mimeType, double timebaseHz);
 
     [DllImport("__Internal")]
     static extern double STM_Fmp4_GetTime(int playerHandle);

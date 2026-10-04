@@ -77,22 +77,22 @@ namespace StreamingMesh
 
     [SerializeField, Range(1, 16), Tooltip("Maximum buffered vertex files, including the file currently being consumed. Byte/frame limits can reduce the actual count. Changing at runtime re-buffers playback.")]
     int m_VertexPrefetchChunks = ReceiverPrefetchWindow.DefaultVertexChunks;
-    [SerializeField, Range(0.5f, 120), Tooltip("Web MSE audio prefetch window in seconds. Native audio players manage their own buffering.")]
-    float m_WebAudioPrefetchSeconds = (float)ReceiverPrefetchWindow.DefaultWebAudioSeconds;
+    [SerializeField, Range(1, 16), Tooltip("Buffered Web MSE audio files, including the current file. Native HLS players manage their own buffering.")]
+    int m_WebAudioPrefetchChunks = ReceiverPrefetchWindow.DefaultWebAudioChunks;
     [SerializeField, Range(0, 120), Tooltip("Seconds of already played Web MSE audio to retain. Evicted audio is fetched again on backward seek.")]
     float m_WebAudioBackBufferSeconds = (float)ReceiverPrefetchWindow.DefaultWebAudioBackSeconds;
     public int VertexPrefetchChunks => m_VertexPrefetchChunks;
-    public double WebAudioPrefetchSeconds => m_WebAudioPrefetchSeconds;
+    public int WebAudioPrefetchChunks => m_WebAudioPrefetchChunks;
     public double WebAudioBackBufferSeconds => m_WebAudioBackBufferSeconds;
 
     /// <summary>Apply buffering settings. A vertex-window change re-buffers at the current time while reusing model resources.</summary>
-    public void ConfigureBuffering(int vertexChunks, double webAudioSeconds, double webAudioBackSeconds)
+    public void ConfigureBuffering(int vertexChunks, int webAudioChunks, double webAudioBackSeconds)
     {
       ReceiverPrefetchWindow.ValidateChunks(vertexChunks);
-      ReceiverPrefetchWindow.Validate(webAudioSeconds);
+      ReceiverPrefetchWindow.ValidateChunks(webAudioChunks);
       ReceiverPrefetchWindow.Validate(webAudioBackSeconds, true);
       m_VertexPrefetchChunks = vertexChunks;
-      m_WebAudioPrefetchSeconds = (float)webAudioSeconds;
+      m_WebAudioPrefetchChunks = webAudioChunks;
       m_WebAudioBackBufferSeconds = (float)webAudioBackSeconds;
       if (m_MeshRenderer != null && m_MeshRenderer.VertexPrefetchChunks != m_VertexPrefetchChunks)
         Seek(m_CurrentTime);
@@ -102,7 +102,7 @@ namespace StreamingMesh
     void ConfigureWebAudioBuffering()
     {
       if (m_Fmp4AudioPlayer is WebFmp4AudioPlayer web)
-        web.ConfigureBuffering(m_WebAudioPrefetchSeconds, m_WebAudioBackBufferSeconds);
+        web.ConfigureBuffering(m_WebAudioPrefetchChunks, m_WebAudioBackBufferSeconds);
     }
 
     public double CurrentTimeSeconds { get { return m_CurrentTime; } }
@@ -859,12 +859,10 @@ namespace StreamingMesh
         if(i <= streamPlayList.Count - 1 && m_MeshRenderer != null) {
           var renderer = m_MeshRenderer;
           var info = streamPlayList[i];
-          // A seek starts at a nearby chunk; older deltas are no longer needed.
-          double chunkEnd = info.endTicks > 0
-            ? info.endTicks / (double)TimeSpan.TicksPerSecond
-            : info.startTicks / (double)TimeSpan.TicksPerSecond +
-              renderer.CombinedFrames * renderer.FrameInterval;
-          if (chunkEnd < Math.Max(0, m_RequestedStartTime - MeshPresentationDelaySeconds))
+          // Exact playlist ranges decide which whole files are still useful.
+          // Recheck after admission waits: a live/slow response may already be old.
+          if (ReceiverPrefetchWindow.IsConsumed(info.startTicks, info.endTicks,
+              Math.Max(0, m_CurrentTime - MeshPresentationDelaySeconds), TimeSpan.TicksPerSecond))
             continue;
           // Bound decoded payload memory when joining a long-running channel.
           while (!renderer.CanAcceptChunk)
@@ -872,6 +870,9 @@ namespace StreamingMesh
             if (this == null || m_PlaybackGeneration != generation || m_MeshRenderer != renderer) yield break;
             yield return null;
           }
+          if (ReceiverPrefetchWindow.IsConsumed(info.startTicks, info.endTicks,
+              Math.Max(0, m_CurrentTime - MeshPresentationDelaySeconds), TimeSpan.TicksPerSecond))
+            continue;
           bool accepted = false;
           for (int attempt = 0; attempt < 3 && !accepted; attempt++)
           {

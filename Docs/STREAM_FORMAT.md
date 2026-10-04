@@ -33,6 +33,7 @@ v6では全JSONプロパティを **lowerCamelCase** に統一する。`stream.s
 - `audioInfo`: 改行区切りの`AudioInfo`プレイリスト。
 - `audioPlaylist`: ネイティブ音声プレーヤー用のHLSプレイリスト（通常`audio.m3u8`）。
 - `audioSampleRate` / `audioChannels`: 音声出力のサンプルレート／チャンネル数。
+- `audioSegmentDurationSeconds`: SenderがAAC fragment生成に指定する公称秒数。`max(0.25, combinedFrames * frameInterval)`。AACフレーム境界、収録終了時の端数などで実時間は異なる。先読み時間の概算に用い、各ファイルの正確な範囲は`stream.stma`の`startTicks`・`endTicks`を使う。v6への追加フィールドで、ファイル選択はこの値に依存しない。
 - `audioClip`: 静的音声クリップを使用する場合のパス。
 - `meshes` / `materials` / `textures`: リソース表。`textureNames`は表示名。
 - `meshSizes` / `materialSizes` / `textureSizes`: 各リソースのバイト長。
@@ -116,10 +117,12 @@ Senderは初期リソースの完成した目録を公開した後、完成し�
 
 頂点の先読みはReceiverの`VertexPrefetchChunks`で **ファイル単位** に指定する。標準は3、範囲は1〜16で、現在消費中のファイルを含む最大保持数である。KAGURAの通常300フレーム／30fpsでは、3ファイルで最大約30秒分に相当し、現在ファイルの残りにより将来分は変わる。秒数を固定してファイルを切り分けることはしない。消費が終わったファイルの展開配列をプールへ返し、空いた枠で次を取得する。展開ペイロードは1ファイル最大128MiB、配列プールは合計256MiB、フレームメタデータは8192件が上限であり、大きな入力では指定数より少なくなるか、バイト上限超過で入力を拒否する。配列は必要になった時点で確保し再利用する。設定変更でも既存配列を引き継ぎ、縮小時は余剰の配列だけを解放する。処理中の旧世代スレッドが保持する配列は、その返却後に解放する。
 
-Web音声は`WebAudioPrefetchSeconds`（標準60秒、0.5〜120秒）と`WebAudioBackBufferSeconds`（標準30秒、0〜120秒）で指定する。取得はfragment全体なので未来側は最大1fragment分だけ指定値を超える。ネイティブ音声のバッファは各OSプレーヤーが管理する。デコード済み頂点の先読み0.5秒とは別の設定である。
+Web音声は`WebAudioPrefetchChunks`（標準3ファイル、1〜16、現在再生中を含む）と`WebAudioBackBufferSeconds`（標準30秒、0〜120秒）で指定する。`stma`を`startTicks`順に並べ、`endTicks <= 再生時刻`のファイルを除いた先頭N個を取得する。シーク先が空白区間の場合は次のファイルから選ぶ。取得済み・取得中のファイルもN個に数え、先読み上限の終了時刻は選択した実範囲から求める。縮小／後方シークでは不要な未来データを破棄する。過去の保持分はN個と別枠である。ファイル数はバイト数の上限ではなく、大きなfragmentにはMSEの容量制限も適用される。ネイティブ音声のバッファは各OSプレーヤーが管理し、このファイル数設定の対象外である。デコード済み頂点の先読み0.5秒とは別の設定である。
+
+頂点も`stmj`の実範囲で再生済みのファイルを除外する。バッファ枠待ちの後にも判定し、ダウンロード遅延やライブの追記で不要になったファイルを取得しない。両目録の範囲は`[startTicks, endTicks)`とする。公称秒数は先読み時間の概算用であり、最終ファイルや可変長ファイルを公称値だけで切り捨てない。
 
 ```csharp
-receiver.ConfigureBuffering(vertexChunks: 3, webAudioSeconds: 20, webAudioBackSeconds: 5);
+receiver.ConfigureBuffering(vertexChunks: 3, webAudioChunks: 3, webAudioBackSeconds: 5);
 ```
 
 KAGURA Receiverの`Buffer settings`からも変更できる。頂点保持数の変更は現在時刻で再バッファリングし、Texture／Material／Meshを再利用する。Web音声のみの変更は再接続せず反映する。

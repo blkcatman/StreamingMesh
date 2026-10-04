@@ -220,6 +220,14 @@ public static class IndexedResourceVerification
       string manifestJson = JsonUtility.ToJson(info);
       Check(manifestJson.Contains("\"protocolVersion\":6") && !manifestJson.Contains("protocol_version"), "Manifest casing/version mismatch");
       var senderSerializer = gameObject.AddComponent<STMHttpSerializer>();
+      var nominalInfo = senderSerializer.CreateChannelInfo(1, 1, 1f / 30f, 300,
+        new List<string>(), new List<string>(), new List<string>(), new List<int>(), new List<int>(), new List<int>(), new List<string>());
+      Check(Math.Abs(nominalInfo.audioSegmentDurationSeconds - 10) < 0.001 &&
+        JsonUtility.FromJson<ChannelInfo>(JsonUtility.ToJson(nominalInfo)).audioSegmentDurationSeconds == nominalInfo.audioSegmentDurationSeconds,
+        "Sender nominal audio duration did not round-trip");
+      var shortInfo = senderSerializer.CreateChannelInfo(1, 1, 0.001f, 1,
+        new List<string>(), new List<string>(), new List<string>(), new List<int>(), new List<int>(), new List<int>(), new List<string>());
+      Check(shortInfo.audioSegmentDurationSeconds == 0.25f, "Nominal audio duration must match Recorder minimum");
       var audioMetadata = senderSerializer.CreateAudioInfo("audio-000000.m4s", 48000, 48000);
       string audioJson = JsonUtility.ToJson(audioMetadata);
       Check(!audioJson.Contains("sequence") && JsonUtility.FromJson<AudioInfo>(audioJson).endTicks == 20000000, "Audio metadata serialization mismatch");
