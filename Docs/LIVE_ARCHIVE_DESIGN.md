@@ -184,6 +184,102 @@ HLSは収録ごとの安定したURLで更新し、ネイティブプレーヤ�
 アーカイブの長い目録は逐次走査／範囲インデックスで扱い、全頂点・音声を
 Receiverメモリへ展開しない。公開窓へ変更する前の追記文字列を永続保持しない。
 
+## Receiverの状態管理の確認
+
+2026-10-04に現行コードを照合した結果、**既存の状態だけではライブとアーカイブを
+安全に扱えない**。描画・復元状態と配信元の状態は役割が異なる。
+追加する状態はReceiver側で管理し、描画側のenumへ配信元の状態を混ぜない。
+
+| 現行の状態・処理 | 再利用できる役割 | 足りない判定 |
+| --- | --- | --- |
+| `StreamingPlaybackState` | キーフレーム待ち、復元不足、描画、最終姿勢保持 | `Holding`はライブの続き待ちでもアーカイブ末尾でも発生する |
+| `m_WantsToPlay` | 利用者の再生／停止意図 | 配信終了・削除と独立に保存する必要がある |
+| `m_PlaybackClockStarted` / `m_AudioSeekRequested` | 再バッファリング中の時計開始・seek待ち | ライブ追従、アーカイブ切り替え、終了を表せない |
+| `m_PlaybackGeneration` / rendererの`m_ImportGeneration` | 古い解析結果の無効化 | 状態応答・HTTP取得にも同じ収録／世代の照合が必要 |
+| `ConnectionStatus` | 利用者向け表示 | 文字列を状態判定に使わず、型付き状態から表示を作る |
+| `m_DurationSeconds` | これまで受領した頂点の最大終端 | ライブのseek開始・終了、確定した全長を区別できない |
+| `IStreamingAudioPlayer.State` | 音声デバイス／プレーヤーの状態 | 配信元のlive/archiveを表さず、終了の報告もOS間で不統一 |
+
+### 分離する状態と権威ある情報
+
+配信元の状態`PublishedStreamState`は`Unknown / Live / Finalizing / Archived / Deleted`。
+`stream.state.json`の明示的な`state`を唯一の判定元とする。
+URL名、ファイル数、追加が止まったこと、音声プレーヤーの終了イベントから
+live/archiveを推測しない。未知のstateは未対応形式として扱い、Archiveに既定しない。
+`Unknown`では再生を始めず、静的リソースと有効snapshotが揃うのを待つ。
+`Finalizing`は公開範囲を持つ完了処理中であり、Archivedの全区間seekをまだ許可しない。
+
+Receiverの動作状態`ReceiverPlaybackState`は
+`Disconnected / Connecting / Buffering / Playing / Paused / Recovering / Ended / Error`。
+`Recovering`の理由としてseek、ライブ復帰、バッファ設定変更、音声ソース切り替えを記録する。
+配信元がLiveでも利用者はPausedであり得る。ArchivedでもBufferingは起こる。
+`m_WantsToPlay`相当の再生意図を別に持ち、回復成功や配信状態変更だけで自動再生しない。
+内部のseek待ちフラグは同期処理の進捗として維持できるが、外部状態の代わりに使わない。
+
+収録コンテキストには`recordingId`、採用revision、元の`timebaseHz`、配信元状態、
+両トラックの公開範囲、確定した最終範囲、取得先を持つ。
+`SeekableStartSeconds` / `SeekableEndSeconds`と、確定時だけ値を持つ
+`FinalDurationSeconds`を公開する。ライブの最大終端を確定全長と呼ばない。
+開始要求は`Latest / Beginning / Position`の方針と位置を明示する。
+時刻0を「最新へ戻る」の意味にも使わない。ライブStop後とPause後のPlayを
+使い分けるため、次回開始方針も再生意図とは別に保持する。
+音声なしでも同じ上位状態を使い、時計やデータ取得方式から配信モードを決めない。
+
+### モードによる操作・イベントの差
+
+| 操作・イベント | Live / Finalizing | Archived |
+| --- | --- | --- |
+| 新規接続 | 静的ロード後に最新の共通範囲から開始 | 確定範囲の先頭から開始 |
+| 自動再接続 | 最新範囲へ復帰、再生意図を維持 | 元の絶対時刻を維持して再取得 |
+| `Seek()` | 最新snapshotのseek可能範囲へ制限 | 確定した全再生範囲へ制限 |
+| `Pause()` → `Play()` | 時刻が範囲外／遅延過大なら復帰、範囲内なら継続 | 停止位置から継続 |
+| `Stop()` | 時刻0へseekせず停止、次回Playで最新へ戻る | 停止して先頭へ戻す |
+| 再生可能データ不足 | Buffering、状態更新を待つ／範囲外なら復帰 | 未取得ならBuffering、欠損ならError、確定末尾ならEnded |
+| 取得済み終端で新規ファイルなし | それだけでは終了としない | 確定末尾を消費してEnded |
+| `Play()`をEndedで操作 | 確定前にEndedへ遷移しない | 明示操作で先頭から再開 |
+
+状態監視はPausedやBuffering中も続ける。メディア取得は有限先読みを維持する。
+Deletedではどの再生状態からも取得・音声を止め、削除理由を持つDisconnectedへ遷移する。
+同じ終了済みセッションへのPlay/Seekは拒否し、明示的な新規接続だけで解除する。
+ネットワーク失敗で最後の有効な配信元状態をUnknownへ戻して挙動を変更しない。
+
+同じ`recordingId`の`Live → Finalizing → Archived`では、絶対再生時刻と利用者の
+再生意図を引き継ぐ。現在位置が範囲内なら先頭・最新へのシークをしない。
+音声ソース変更が必要ならRecoveringへ入り、変更後のseek確認とバッファ準備を待つ。
+PausedはPausedへ戻す。異なるrecordingIdや明示的な新規接続は別セッションとして扱う。
+同じ収録では逆行したstate／revisionを採用せず、矛盾した応答はエラーとして記録する。
+
+切り替え時はチャンネルの状態取得先、初期リソース取得先、頂点／音声の取得先を
+別に保持する。現在の`ResourceFingerprint()`は`m_ChannelAddress`も含むため、
+その値をarchive URLへ入れ替えるだけでは同じリソースでもcache missになる。
+収録内で安定した初期リソースのURL／内容ハッシュをfingerprintの入力とし、
+音声・目録の取得先変更だけではTexture／Material／Meshを再構築しない。
+採用済みセッションの制御取得先も収録IDに結び付け、同名チャンネルの別収録と混ぜない。
+
+### 終了と非同期処理の不足
+
+現行`Receiver.UpdateSynchronizedPlayback()`は音声State 3をEndedへ反映しない。
+Webはendedイベントを3として返すが`endOfStream()`を呼ばず、Androidは
+STATE_ENDEDも0へまとめ、Appleは3を返す。この整数をそのまま上位状態としない。
+音声側は型付きの準備・時計・終了・エラーを通知し、seek完了は要求世代と照合する。
+
+終端判定にはArchivedの確定範囲と最後のフレーム／音声区間の消費を使う。
+末尾では未来フレームの先読み条件を要求せず、最後の姿勢をその表示区間まで保持する。
+現行の`CanPlayAt()`は先読みフレーム数と未来PTSを必要とするため、ここをそのまま
+使うと確定末尾の手前で音声を止め、終了待ちになり得る。
+LiveのHoldingをEndedと見なす変更や、音声endedだけによる全体終了は行わない。
+
+状態監視のcoroutine分離に加え、HTTP経路も分離する。
+現行`HttpManager`は`ThreadManager`の一つの直列HTTPキューを使うので、
+大きな頂点取得中には別coroutineから出したstate要求も待たされる。
+状態取得1件とメディア取得の上限付き枠を独立にし、timeout／cancelを持たせる。
+`StopAllCoroutines()`では別GameObjectのThreadManager上のHTTPは止まらない。
+世代チェックに加え、要求handleのAbort／Disposeと未実行キューの取り消しが必要。
+
+KAGURAのUIも`DurationSeconds`を上限とする0起点sliderから、明示的なseek範囲へ変更する。
+ライブ／完了処理中／アーカイブ、現在再生状態を型付き状態から表示し、
+DeletedやErrorで無効な再生操作を有効にしない。
+
 ## Receiverの開始・追従・先読み
 
 「常に最新」は、途中接続・Reconnect・公開範囲からの脱落時に最新へ戻り、
@@ -279,6 +375,11 @@ KAGURAを30fpsで新規収録し、2秒=60、3秒=90、5秒=150フレームを�
 | 頂点／音声の片側アップロード遅延 | 共通実範囲を維持し、未受領ファイルを公開しない |
 | 長いpause・通信断・遅い取得 | 範囲外復帰後にA/V同期、旧世代結果が混入しない |
 | 同サイズ／短いsnapshot、応答順序逆転 | 最新revisionを採用し、内容を取り逃さない |
+| Unknown／無更新／一時的な通信失敗 | live/archiveを推測せず、最後の有効状態を維持 |
+| pause中・再生中のLive→Archived | 同じ絶対時刻と再生意図を維持、静的リソースを再確保しない |
+| モード別のStop／Play／Seek／自動再接続 | ライブ範囲と確定範囲を使い分け、無効な時刻へ取得しない |
+| 確定末尾・一時的なライブHolding | archiveは最後まで消費してEnded、liveは続き待ち |
+| 遅いメディア取得中の状態更新／削除 | 独立したstate要求で検知、古い要求を実際に取り消す |
 | 公開数と先読み数の増減 | 公開外を取得せず、プール所有権とメモリ上限を維持 |
 | Android HLS窓の繰り上がり | 絶対時刻が窓更新で巻き戻らず、頂点と同期 |
 | HLS最低長・猶予 | 指定数より実数が増える条件と旧URLの有効期限が正しい |
@@ -300,6 +401,10 @@ WASM使用量と確保済み容量を記録する。Appleは実機を使える�
 - `Assets/StreamingMesh/Scripts/Utils/HttpWrapper.cs`: `RequestPlaylistDiff()`は文字数増加を前提。
 - `Assets/StreamingMesh/Scripts/Receiver.cs`: metadata pollingと取得枠待ちが同一coroutine。
   初回は公開先頭、動的状態への追従なし。静的manifest全体がresource fingerprintの入力。
+- `Assets/StreamingMesh/Scripts/Core/Rendering/StreamingMeshRenderer.cs`: 状態は描画・復元用であり配信モードを表さない。確定末尾の表示条件が必要。
+- `Assets/StreamingMesh/Scripts/Core/Rendering/IStreamingAudioPlayer.cs`: 音声の状態・seek完了を型付きで統一し、配信元状態と分離。
+- `Assets/StreamingMesh/Scripts/Net/HttpManager.cs` / `Assets/StreamingMesh/Scripts/Core/Threading/ThreadManager.cs`: stateとメディア取得の独立枠・キャンセルが必要。
+- `Assets/Samples/UnityChanKAGURA/Scripts/KaguraReceiverControls.cs`: 0起点の全長sliderとStopをモード別の範囲・操作へ変更。
 - `Assets/StreamingMesh/STMHttpSender.cs`: キーフレーム周期とファイル境界が独立。
   `Stop()`は非同期処理・最終アップロードの完了を保証しない。
 - `Assets/StreamingMesh/Scripts/STMHttpBaseSerializer.cs`: 送信成功／drainの明示的通知が必要。
