@@ -23,7 +23,7 @@ Senderにアーカイブを保存しない。Senderは上限付きの送信待�
 | --- | --- | --- | --- |
 | Sender | 未確認の送信データだけ | 送信バッファ・一時ファイルを解放 | 同左 |
 | サーバー保存 | 全区間の一時保管 | 全区間・初期リソース・目録を永続化 | 配信猶予後に削除 |
-| ライブ公開 | 最新の可変ファイル数 | 最後の範囲で終了、アーカイブURLを通知 | 終了状態、以後410 |
+| ライブ公開 | 最新の可変ファイル数 | 最後の範囲で終了、アーカイブURLを通知 | 未作成と同じ404 Not Found |
 | Receiver | 範囲内の有限先読み | 現在時刻を維持してアーカイブへ移行 | 取得・再生を停止 |
 
 過去ファイルの一時保管はライブURLの任意ファイル取得で公開しない。
@@ -71,7 +71,10 @@ Content-Type: application/json
 ことは要求しない。末尾の短いfragmentや丸めを許容し、両トラックの実終端を記録する。
 削除は欠損のある収録も片付けられるが、収録IDと権限の照合を省略しない。
 
-状態は`live → finalizing → archived | deleted`。完了要求に必要なデータが未受領なら
+サーバー内部の状態は`live → finalizing → archived | deleted`。`deleted`は公開しない。
+Receiver向けに公開するstateは`live / finalizing / archived`だけとする。
+削除済みと未作成は、どちらも同じ404 Not Found応答にする。
+完了要求に必要なデータが未受領なら
 409で欠損を返し、`live`を維持する。処理失敗時は再試行可能な状態を残し、
 「成功したがデータが欠けている」状態にしない。完了後の追加アップロードは409。
 
@@ -80,7 +83,8 @@ Content-Type: application/json
 アーカイブ構築は一時領域で行い、検証と永続化後に公開する。
 アップロードも同一ID・同一内容の再送は成功、異なる内容は409とし、目録を重複追記しない。
 
-成功応答は`recordingId`、`state`、`archiveUrl`（削除ならnull）を返す。
+認証済みSenderへの成功応答は`recordingId`、要求した`action`、`ok: true`、
+`archiveUrl`（削除ならnull）を返す。Receiver向けの削除通知には使わない。
 削除後も最小限の完了記録を残し、応答喪失による再送で処理を二重実行しない。
 通信切断や無更新を正常完了とは扱わない。未完了の収録は復旧／管理対象として残す。
 
@@ -121,7 +125,7 @@ HLSの拡大は以後の追加から徐々に行い、実際に公開できた�
 音声なしは頂点だけで決める。欠損／discontinuityを跨いで「連続」と見なさない。
 
 ファイルの実範囲は`[startTicks, endTicks)`。
-公称`combinedFrames * frameInterval`と`audioSegmentDurationSeconds`は概算用とし、
+公称の頂点チャンク秒数と`audioSegmentDurationSeconds`は概算用とし、
 範囲の決定・選択・消費済み判定には使わない。
 音声時刻を基準に表示を遅らせる現在のReceiverでは、頂点公開範囲に
 `MeshPresentationDelaySeconds`を加えた区間と、音声区間の積集合が実際の再生可能範囲。
@@ -166,6 +170,8 @@ GET /channels/channel_KAGURA/stream.state.json
 - `vertexStartTicks` / `vertexEndTicks`、`audioStartTicks` / `audioEndTicks`。
 - 同じrevisionで選ばれた`vertexChunks` / `audioChunks`のメタデータ。
   各要素は既存のstmj/stma情報と受領済みサイズ・ハッシュを持ち、ファイル名は収録内で一意。
+- `finalVertexFile`: 完了APIで検証した最終頂点ファイル。未確定ならnull。
+  Receiverが最終ファイルの末尾K例外を検証するために使う。
 - HLS絶対時刻へ対応させるための、収録時刻0に固定した`recordingOriginUnixMs`。
 
 状態と公開ファイル一覧を一つの原子的snapshotとして返す。順番が前後した応答は
@@ -189,6 +195,7 @@ Receiverメモリへ展開しない。公開窓へ変更する前の追記文字
 2026-10-04に現行コードを照合した結果、**既存の状態だけではライブとアーカイブを
 安全に扱えない**。描画・復元状態と配信元の状態は役割が異なる。
 追加する状態はReceiver側で管理し、描画側のenumへ配信元の状態を混ぜない。
+以下の表は現行の棚卸しであり、これらの変数へさらにフラグを足す実装方針ではない。
 
 | 現行の状態・処理 | 再利用できる役割 | 足りない判定 |
 | --- | --- | --- |
@@ -202,28 +209,96 @@ Receiverメモリへ展開しない。公開窓へ変更する前の追記文字
 
 ### 分離する状態と権威ある情報
 
-配信元の状態`PublishedStreamState`は`Unknown / Live / Finalizing / Archived / Deleted`。
+配信元の状態は有効なsnapshot内の`Live / Finalizing / Archived`だけで持つ。
 `stream.state.json`の明示的な`state`を唯一の判定元とする。
 URL名、ファイル数、追加が止まったこと、音声プレーヤーの終了イベントから
 live/archiveを推測しない。未知のstateは未対応形式として扱い、Archiveに既定しない。
-`Unknown`では再生を始めず、静的リソースと有効snapshotが揃うのを待つ。
+未取得は「有効snapshotなし」で表し、Unknown用の別変数や配信モードを追加しない。
 `Finalizing`は公開範囲を持つ完了処理中であり、Archivedの全区間seekをまだ許可しない。
 
-Receiverの動作状態`ReceiverPlaybackState`は
-`Disconnected / Connecting / Buffering / Playing / Paused / Recovering / Ended / Error`。
-`Recovering`の理由としてseek、ライブ復帰、バッファ設定変更、音声ソース切り替えを記録する。
-配信元がLiveでも利用者はPausedであり得る。ArchivedでもBufferingは起こる。
-`m_WantsToPlay`相当の再生意図を別に持ち、回復成功や配信状態変更だけで自動再生しない。
-内部のseek待ちフラグは同期処理の進捗として維持できるが、外部状態の代わりに使わない。
+Receiverの上位状態は一つのFSMが持つ
+`Disconnected / Preparing / Paused / Playing / Ended / Faulted`の6種類に整理する。
+Preparingは接続、buffer待ち、seek、ライブ復帰、音声ソース切り替えをまとめて扱う。
+Faultedは失敗理由を一つ持ち、404は`NotFound`として表示する。Deletedは持たない。
+利用者の再生意図だけは`PlaybackIntent: Play / Pause`として独立して保持する。
+準備中にPauseを押された場合や同じ収録のアーカイブ化で、意図を失わないためである。
+`LivePaused`のような組み合わせenumは作らない。
 
 収録コンテキストには`recordingId`、採用revision、元の`timebaseHz`、配信元状態、
 両トラックの公開範囲、確定した最終範囲、取得先を持つ。
 `SeekableStartSeconds` / `SeekableEndSeconds`と、確定時だけ値を持つ
 `FinalDurationSeconds`を公開する。ライブの最大終端を確定全長と呼ばない。
-開始要求は`Latest / Beginning / Position`の方針と位置を明示する。
+開始要求は単一の`PlaybackRequest`に`Latest / Beginning / Position`の方針と位置を持たせる。
 時刻0を「最新へ戻る」の意味にも使わない。ライブStop後とPause後のPlayを
-使い分けるため、次回開始方針も再生意図とは別に保持する。
+使い分けるため、Stop時に次回の要求を登録し、実行完了時に消費する。
 音声なしでも同じ上位状態を使い、時計やデータ取得方式から配信モードを決めない。
+
+### FSMとストラテジーの責務
+
+`ReceiverPlaybackController`を状態遷移の唯一の所有者にする。
+ReceiverはUnity lifecycleと公開APIの入口、描画・音声・HTTPは実行アダプターとする。
+データ取得callbackやUIがそれぞれ状態変数を書き換える構造にしない。
+
+| 所有者 | 保持する情報 | 保持しない重複情報 |
+| --- | --- | --- |
+| Session | 収録ID、検証済みsnapshot、静的リソース参照、再生カーソル | `isLive`、別の最大終端、削除履歴 |
+| Controller | FSMの現在状態、PlaybackIntent、未消費のPlaybackRequest | 初期化中／再生中／seek中などの並列bool |
+| PreparingのOperation | 一つの準備工程、取消IDと要求handle | 工程ごとの独立した待機フラグ |
+| PlaybackPolicy | snapshotに応じた計算・判断だけ | 状態、HTTP、リソース、再生意図 |
+
+Preparing内の工程は`Resources → Snapshot → Buffers → AudioSeek → Ready`。
+不要な工程は飛ばし、音声なしならAudioSeekを飛ばす。新規接続はResourcesから、
+通常のseek／ライブ復帰／バッファ設定変更は既存リソースを使い必要工程から始める。
+準備理由と工程はPreparingのpayload内にのみ存在し、別の上位状態へ移ったら破棄する。
+Faultedの失敗理由もFaultedのpayload内だけに持つ。
+構築・遷移APIで「Playingなのにseek待ち」などの不正なpayload組み合わせを作らせない。
+
+| 現行の変数 | 整理後 |
+| --- | --- |
+| `m_AudioPlaying` | FSMがPlayingかどうかから導出 |
+| `m_PlaybackClockStarted` | 独立boolを廃止。Readyを通過したFSM遷移で時計を開始 |
+| `m_AudioSeekRequested` | AudioSeek工程への入場時に一回だけseekを発行 |
+| `IsInitializing` | PreparingのResources工程から導出 |
+| `m_PlayIntentConfigured` | 起動時の設定を一回適用し、実行時フラグを廃止 |
+| `m_WantsToPlay` | PlaybackIntentに集約 |
+| `m_RequestedStartTime` | PlaybackRequestの位置へ集約 |
+| `m_DurationSeconds` | 検証済みsnapshotとpolicyから導出 |
+| `ConnectionStatus` | FSMの状態・工程・失敗理由から表示を生成 |
+| `m_FetchingPlaylists` | HTTPアダプターのactive handleから導出 |
+
+一方、世代番号は状態フラグではなく非同期処理の安全性のために残す。
+Operationを置換すると古い要求をcancelし、遅れた結果は取消IDで無視する。
+renderer内部の世代とlease管理はその所有者に留め、上位FSMの変数へ複製しない。
+buffer準備状況や音声時計もアダプターから読み、boolとして二重に保存しない。
+
+`LivePlaybackPolicy`と`ArchivePlaybackPolicy`をステートレスなstrategyとして使う。
+Live/Finalizingには前者、Archivedには後者をsnapshotから選ぶ。
+policyの仕事は開始位置、seek範囲、再開位置、データ不足時の判断、確定終端の判定。
+結果は`Wait / Reposition / Finish / Fail`などの判断値として返し、
+HTTP開始、音声停止、FSM遷移はControllerが一度だけ実行する。
+policy自身がPlayerやReceiverを書き換えない。下表のモード差はこの層へ集約する。
+
+FSMはUnityのメインスレッドで遷移し、非同期完了は取消ID付きイベントとして渡す。
+現在の状態に適用できないイベントと旧Operationの完了は無視する。
+音声SetPlayingやseekは遷移／工程への入場時に実行し、毎フレームの判定から重複発行しない。
+高頻度の時計更新・描画・ring buffer処理は既存アダプターで継続し、
+毎フレーム新しい状態オブジェクトやstrategyを生成しない。汎用FSMライブラリは必須にしない。
+
+| 現在状態とイベント | 遷移・処理 |
+| --- | --- |
+| 新規Connect／明示Reconnect | 旧OperationをcancelしてPreparing。policyで開始要求を解決 |
+| PreparingでPause／Play | intentのみ変更。工程を重複開始しない |
+| PreparingでReady | intentがPlayならPlaying、PauseならPaused |
+| PlayingでPause | Paused。音声を停止し、時計は同じ位置を維持 |
+| PausedでPlay | policy判定。位置が有効ならPlaying、不足／範囲外ならPreparing |
+| seek／ライブ脱落／再準備が必要な設定変更 | intentを維持してPreparing、新しいOperationを一つ作る |
+| Playingでデータ不足 | policyのWait/RepositionならPreparing、FinishならEnded、FailならFaulted |
+| Stop | intentをPauseにし、policyの次回開始要求を保存。旧Operationをcancelし、準備済みSessionがあればPaused、なければDisconnected |
+| 状態取得先404 | Faulted(NotFound)。取得・再生を停止、Connect以外で再試行しない |
+| EndedでPlay | Archive policyで先頭開始要求を作りPreparing |
+
+NotFound時の外部表示は常にNot Found。FSMの内部表現を理由付きFaultedへまとめても、
+存在履歴を推定した状態や通知にはしない。
 
 ### モードによる操作・イベントの差
 
@@ -234,18 +309,19 @@ Receiverの動作状態`ReceiverPlaybackState`は
 | `Seek()` | 最新snapshotのseek可能範囲へ制限 | 確定した全再生範囲へ制限 |
 | `Pause()` → `Play()` | 時刻が範囲外／遅延過大なら復帰、範囲内なら継続 | 停止位置から継続 |
 | `Stop()` | 時刻0へseekせず停止、次回Playで最新へ戻る | 停止して先頭へ戻す |
-| 再生可能データ不足 | Buffering、状態更新を待つ／範囲外なら復帰 | 未取得ならBuffering、欠損ならError、確定末尾ならEnded |
+| 再生可能データ不足 | Preparing、状態更新を待つ／範囲外なら復帰 | 未取得ならPreparing、欠損ならFaulted、確定末尾ならEnded |
 | 取得済み終端で新規ファイルなし | それだけでは終了としない | 確定末尾を消費してEnded |
 | `Play()`をEndedで操作 | 確定前にEndedへ遷移しない | 明示操作で先頭から再開 |
 
-状態監視はPausedやBuffering中も続ける。メディア取得は有限先読みを維持する。
-Deletedではどの再生状態からも取得・音声を止め、削除理由を持つDisconnectedへ遷移する。
-同じ終了済みセッションへのPlay/Seekは拒否し、明示的な新規接続だけで解除する。
-ネットワーク失敗で最後の有効な配信元状態をUnknownへ戻して挙動を変更しない。
+状態監視はPausedやPreparing中も続ける。メディア取得は有限先読みを維持する。
+状態取得先の404ではどの再生状態からも取得・音声を止め、Faulted(NotFound)へ遷移する。
+削除されたのか最初から存在しないのかは判定・表示しない。
+NotFoundでのPlay/Seekは拒否し、明示的な接続操作だけで再確認する。
+ネットワーク失敗で最後の有効snapshotを破棄して配信モードを変更しない。
 
 同じ`recordingId`の`Live → Finalizing → Archived`では、絶対再生時刻と利用者の
 再生意図を引き継ぐ。現在位置が範囲内なら先頭・最新へのシークをしない。
-音声ソース変更が必要ならRecoveringへ入り、変更後のseek確認とバッファ準備を待つ。
+音声ソース変更が必要ならPreparingへ入り、変更後のseek確認とバッファ準備を待つ。
 PausedはPausedへ戻す。異なるrecordingIdや明示的な新規接続は別セッションとして扱う。
 同じ収録では逆行したstate／revisionを採用せず、矛盾した応答はエラーとして記録する。
 
@@ -278,7 +354,7 @@ LiveのHoldingをEndedと見なす変更や、音声endedだけによる全体�
 
 KAGURAのUIも`DurationSeconds`を上限とする0起点sliderから、明示的なseek範囲へ変更する。
 ライブ／完了処理中／アーカイブ、現在再生状態を型付き状態から表示し、
-DeletedやErrorで無効な再生操作を有効にしない。
+Faulted(NotFound)や他の失敗理由で無効な再生操作を有効にしない。
 
 ## Receiverの開始・追従・先読み
 
@@ -310,18 +386,80 @@ DeletedやErrorで無効な再生操作を有効にしない。
 短いチャンクでは0.5〜1秒程度を目安に上限付きpollingし、state revisionが同じなら
 解析・取得を増やさない。通信失敗はbackoffし、削除／終了を通常の空目録と区別する。
 
-期限切れファイルの404/410はstateを再取得して範囲外復帰を判定する。
-チャンネル状態の410は削除として停止し、再試行ループを続けない。
+メディアファイルの404はstateを再取得して範囲外復帰を判定する。
+チャンネル状態の404はNotFoundとして停止し、削除を推測する再試行ループを続けない。
 HTTP wrapperはnullだけでなくstatus codeと取得世代を通知する必要がある。
 完成済みアーカイブの欠損はライブの完成待ちではなくエラーとして扱う。
 
 ### 頂点チャンクの独立性
 
-全`.stmv`の最初のフレームをキーフレームにする。既存の定周期キーフレームも維持する。
-現行は`combinedFrames`と`subframesPerKeyframe + 1`が別周期であり、任意設定では
-ファイル先頭が差分になる。KAGURAの300/90/60/150が偶然周期に合うことに依存しない。
-非同期readbackを考慮し、flush完了時ではなくcapture予約時にチャンク先頭を決める。
-入力欠落でその前提が崩れたときは差分のまま公開せず、収録エラーとして扱う。
+`.stmv`の境界仕様は次のとおりとする。
+
+- 全ファイルの先頭はキーフレーム（K）。
+- 最終ファイル以外の末尾は差分フレーム（D）。通常ファイルは最低2フレーム。
+- 収録全体の最後のファイルだけはKで終了してよい。K一つだけの最終ファイルも許す。
+- ファイル間でフレームを重複・削除しない。sequenceとPTSを連続して受け渡す。
+- ファイル途中の定周期Kは維持する。ファイル境界とKの周期を同じ計画で決める。
+
+旧`subframesPerKeyframe`は「Kの後のDの数」なので、0では全フレームがKになり
+通常ファイルの末尾条件を満たせない。v7では意味を明確にした
+`keyframeIntervalFrames`（K間のフレーム数、最低2）へ変更する。
+旧設定4は5へ、KAGURAの旧設定9は10へ変換する。
+Unityシーンの値を単に同名扱いして引き継がず、+1する移行処理が必要。
+
+旧`combinedFrames`は上限と目標を兼ねているため、v7では分離する。
+
+| 項目 | 意味 |
+| --- | --- |
+| `targetChunkFrames` | Senderの希望する1ファイルのフレーム数。厳密な件数ではない |
+| `keyframeIntervalFrames` | K一つと後続Dからなる周期の長さG。G >= 2 |
+| `maxChunkFrames` | 収録開始時に確定する1ファイルの最大実件数。Receiverの容量・入力検証に使う |
+| `.stmv`先頭のframeCount／`stmj.frameCount` | そのファイルが実際に持つ件数。双方とsequence範囲を照合する |
+
+通常のフレーム列を`K D ... D`の周期単位でまとめ、目標件数Tに最も近い
+合法なGの倍数Cで分割する。同距離なら小さい方にする。通常ファイルの実件数はC、
+最終ファイルは1〜C。Cを`maxChunkFrames`として静的目録に宣言する。
+T < Gなら最小の1周期Gにし、実効値が目標より長いことをSenderに表示する。
+
+| 目標T | 周期G | 通常の実件数C | フレーム列 |
+| --- | --- | --- | --- |
+| 60 | 10 | 60 | `(K D×9)×6` |
+| 61 | 10 | 60 | `(K D×9)×6` |
+| 66 | 10 | 70 | `(K D×9)×7` |
+| 3 | 10 | 10 | `K D×9` |
+
+例えば周期3・目標6で13フレーム収録すると、
+`[K D D K D D] [K D D K D D] [K]`になる。
+最後のKは次のファイルへ置き、直前の通常ファイルへ付け足さない。
+ちょうど通常境界で停止した場合は最後の通常ファイルが最終ファイルになり、空ファイルを作らない。
+
+Cは4096フレームと既存の展開128MiB上限の両方を守る合法な値から選ぶ。
+メッシュの既知のレイアウトとK/Dの最大サイズ、サイズ表を含めた保守的な上界で
+収録開始前に容量を予約する。少なくとも1周期が収まらない設定は開始時に拒否する。
+サイズ超過後にファイルを切って、予約済みのDを次のファイルの先頭に回すことはしない。
+入力レイアウトの変化などで上界が崩れた場合も、不正なチャンクを公開せずエラーにする。
+
+captureが実際に受理される時点で、sequence、チャンク番号、周期内位置、K/Dを
+同じ計画から決めて固定する。readback完了順やflush時に後からK/Dを変更しない。
+現行は周期カウンターをcapture完了前に進めるため、これも予約方式に置き換える。
+予約済みフレームはsequence順にcommitし、録画中のT/G変更は次の収録へ適用する。
+Stop後は予約済み処理をdrainしてから最終ファイルを確定し、勝手にKを追加しない。
+
+Kで終わる短い末尾を通常ファイルとして先行公開しない。
+最終ファイルの例外は、完了APIで検証した`vertex.lastFile`と結び付ける。
+サーバーはそのファイルを完了処理まで一時保管し、最終ファイルであると確定した後に
+公開する。Receiverも確定した最終ファイルの識別情報に基づいて例外を許す。
+単に「現在最後に見えるファイルだから最終」と判定してはならない。
+
+現行Receiverのサイズ表は既に可変frameCountを読めるが、配列プール・フレームリングの
+容量は`combinedFrames`に依存する。目標Tではなく宣言上限`maxChunkFrames`へ変更し、
+各ファイルの実件数で保持枠とメタデータを扱う。未来PTS／sequenceは実ヘッダーから読み、
+`ファイル番号 * T`で計算しない。先読み範囲はこれまでどおり実start/endTicksで選ぶ。
+先頭K・通常末尾D・件数・sequence・サイズ上限はサーバーとReceiver双方で検証する。
+
+音声の公称fragment秒数は実効CとframeIntervalから算出し、AAC境界の差は許容する。
+T/G変更でHLS target durationを収録途中に変更しない。正確な音声／頂点範囲は
+引き続き各ファイルの実PTSを使い、件数変更でA/Vの公開窓をずらさない。
 
 ### ネイティブ音声の時刻
 
@@ -352,8 +490,11 @@ VOD HLSを公開する。同じライブHLSの先頭へ削除済み項目を戻�
 最終共通範囲の終了を検知して終了状態にし、末尾で永久に完成待ちをしない。
 片方だけ残る短い末尾を再生可能な共通終端より先まで同期再生しようとしない。
 
-`delete`ではstate／目録で410を返し、Receiverは音声、polling、取得を止めて
-削除済み状態を表示する。既存メディアのURLは必要な猶予期間だけ取得可能とし、
+`delete`では公開state／目録に、未作成のチャンネルと同じ404 Not Foundを返す。
+応答本文・ヘッダー・一覧表示に削除履歴、旧収録ID、削除理由を載せない。
+Receiverは音声、polling、取得を止めてNotFoundを表示し、存在履歴を推測しない。
+サーバー内部の完了記録は認証済みSenderの再送判定だけに使う。
+既存メディアのURLは必要な猶予期間だけ取得可能とし、
 期間後に収録単位で片付ける。アーカイブ／別収録の共有リソースを誤削除しない。
 
 ## 実装順と受入試験
@@ -370,12 +511,16 @@ KAGURAを30fpsで新規収録し、2秒=60、3秒=90、5秒=150フレームを�
 
 | 試験 | 合格条件 |
 | --- | --- |
-| 任意チャンク長（周期に合わない61フレームも含む） | 全ファイルが単独復元可能で、欠落sequenceなし |
+| 周期に合わない目標（61、66など） | 目標に近い合法件数、全先頭K、通常末尾D、欠落／重複sequenceなし |
+| 全停止位置・周期2以上・最終Kのみ | 最終ファイルだけ末尾K可、空ファイルや追加フレームなし |
+| 旧subframes=0／1周期が容量上限を超える設定 | 開始時に拒否し、通常末尾Kや上限超過を公開しない |
 | 途中接続・長い初期テクスチャロード | 初期ロード後の最新窓から開始し、古い窓で停止しない |
 | 頂点／音声の片側アップロード遅延 | 共通実範囲を維持し、未受領ファイルを公開しない |
 | 長いpause・通信断・遅い取得 | 範囲外復帰後にA/V同期、旧世代結果が混入しない |
 | 同サイズ／短いsnapshot、応答順序逆転 | 最新revisionを採用し、内容を取り逃さない |
-| Unknown／無更新／一時的な通信失敗 | live/archiveを推測せず、最後の有効状態を維持 |
+| snapshot未取得／無更新／一時的な通信失敗 | live/archiveを推測せず、最後の有効状態を維持 |
+| Preparing中の連続Play/Pause/Seek/Stop | 有効Operationは一つ、最終intentを維持、旧seek完了で状態を上書きしない |
+| 全FSMイベント・NotFoundからの操作 | 許可遷移のみ、無効操作やrenderer Holdingで勝手にモードを変更しない |
 | pause中・再生中のLive→Archived | 同じ絶対時刻と再生意図を維持、静的リソースを再確保しない |
 | モード別のStop／Play／Seek／自動再接続 | ライブ範囲と確定範囲を使い分け、無効な時刻へ取得しない |
 | 確定末尾・一時的なライブHolding | archiveは最後まで消費してEnded、liveは続き待ち |
@@ -386,7 +531,7 @@ KAGURAを30fpsで新規収録し、2秒=60、3秒=90、5秒=150フレームを�
 | Stop時の遅延readback／AAC末尾／ACK喪失 | 全受領後だけarchive成功、再送で重複しない |
 | archive中断・サーバー再起動・二重complete | 永続記録から復旧し、同じ結果／矛盾要求409 |
 | 同名チャンネル再収録・古いcomplete | 新しい収録を削除・上書きしない |
-| delete完了 | Receiver停止・410、猶予後だけ物理削除 |
+| delete完了／未作成チャンネル | 同じ404 Not Found、履歴・削除理由を返さずReceiver停止、猶予後だけ物理削除 |
 | archive完了・新規archive接続 | 全区間seek可能、接続中は時計を維持、新規は先頭開始 |
 | 長時間ライブ | metadata/取得済みID/メディアバッファが収録時間に比例して増えない |
 
@@ -394,6 +539,10 @@ WebGLと接続済みAndroidネイティブで実測する。配信ファイル�
 window revision、ライブ遅延、音声／頂点PTS差、受信／解析の世代、プール使用量、
 WASM使用量と確保済み容量を記録する。Appleは実機を使えるまで未検証と明記する。
 サーバーの一時保管容量は全収録に比例することを別に観測する。
+
+2026-10-04の設計確認では、周期2〜40・目標1〜160について境界計算と停止位置を
+1,152,482ケース走査し、通常末尾D・次の先頭K・最終端数・件数保存を確認した。
+これは参照計算の確認であり、Sender実装、バイト上限、FSM動作、実機再生の合格を意味しない。
 
 ## 現行コードで確認した変更箇所
 
@@ -405,7 +554,7 @@ WASM使用量と確保済み容量を記録する。Appleは実機を使える�
 - `Assets/StreamingMesh/Scripts/Core/Rendering/IStreamingAudioPlayer.cs`: 音声の状態・seek完了を型付きで統一し、配信元状態と分離。
 - `Assets/StreamingMesh/Scripts/Net/HttpManager.cs` / `Assets/StreamingMesh/Scripts/Core/Threading/ThreadManager.cs`: stateとメディア取得の独立枠・キャンセルが必要。
 - `Assets/Samples/UnityChanKAGURA/Scripts/KaguraReceiverControls.cs`: 0起点の全長sliderとStopをモード別の範囲・操作へ変更。
-- `Assets/StreamingMesh/STMHttpSender.cs`: キーフレーム周期とファイル境界が独立。
+- `Assets/StreamingMesh/STMHttpSender.cs`: キーフレーム周期とファイル境界が独立。周期単位の分割と最終末尾の例外を設計仕様へ合わせる。
   `Stop()`は非同期処理・最終アップロードの完了を保証しない。
 - `Assets/StreamingMesh/Scripts/STMHttpBaseSerializer.cs`: 送信成功／drainの明示的通知が必要。
 - `Assets/StreamingMesh/Scripts/STMAudioRecorder.cs`: encoder終了後の最終出力を確認する完了条件が必要。
