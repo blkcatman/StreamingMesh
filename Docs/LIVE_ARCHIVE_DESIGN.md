@@ -4,6 +4,10 @@
 現在動作しているv6は追記型目録を前提にする。この仕様へ移行するときは
 Sender・サーバー・Receiverを揃えて更新する。旧データとの互換性は要求しない。
 
+共通境界をファイルからフレームへ変更し、format・圧縮・通信を分離する方針は
+[フレーム単位のストリームとプロトコル分離](STREAM_PIPELINE_DESIGN.md)に記す。
+この文書のREST・JSON・stmv・HLSは最初のHTTP profileの仕様であり、Coreの必須wire形式ではない。
+
 ## 保存と公開の責務
 
 Senderにアーカイブを保存しない。Senderは上限付きの送信待ちバッファを持ち、
@@ -245,6 +249,10 @@ ReceiverはUnity lifecycleと公開APIの入口、描画・音声・HTTPは実�
 | Controller | FSMの現在状態、PlaybackIntent、未消費のPlaybackRequest | 初期化中／再生中／seek中などの並列bool |
 | PreparingのOperation | 一つの準備工程、取消IDと要求handle | 工程ごとの独立した待機フラグ |
 | PlaybackPolicy | snapshotに応じた計算・判断だけ | 状態、HTTP、リソース、再生意図 |
+
+Sessionはadapterが正規化した情報を保持する。CoreのsnapshotはJSONやstmj/stmaではなく、
+モード・能力・公開範囲・track／codec descriptorを表す。
+HTTP固有の公開ファイル数と目録はHTTP adapterが管理する。
 
 Preparing内の工程は`Resources → Snapshot → Buffers → AudioSeek → Ready`。
 不要な工程は飛ばし、音声なしならAudioSeekを飛ばす。新規接続はResourcesから、
